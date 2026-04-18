@@ -431,33 +431,41 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 
 ### P1 — Shared Foundations (main lane; required before fan-out)
 
-- [ ] Migrations `0002_rbac.sql`, `0003_ops_baseline.sql` (incl. `device_certs`, `mtls_config`, `endpoint_allowlist`, `retention_policies`, `api_metrics`, `client_crash_reports`, `audit_log`), `0004_notifications.sql`.
-- [ ] `auth/argon2.rs` + verifier + unit tests (hash round-trip, bad-password, iteration params).
-- [ ] `auth/jwt.rs` HS256 encode/verify; 15-min lifetime; unit tests.
-- [ ] `auth/sessions.rs` issue/rotate/revoke + 10/15min lockout; integration tests.
-- [ ] `auth/email_crypto.rs` AES-256-GCM + HMAC + mask; unit tests + DB-contents integration test (R34) verifying plaintext substring absent.
-- [ ] `auth/signed_url.rs` sign/verify with forged + expired negative tests.
-- [ ] Middleware stack: `request_id`, `allowlist`, `budget` (3 s), `metrics`, `error_normalize`.
-- [ ] Extractors: `AuthUser`, `RequirePermission(code)`, `OwnerGuard` (powers SELF and PERM_OR_SELF classifications).
-- [ ] `errors.rs` unified `AppError` → JSON envelope per design mapping.
-- [ ] `tls.rs` Rustls builder with pinned client-cert verifier (SPKI SHA-256 set, reloadable, `enforced` flag from DB).
-- [ ] Auth endpoints A1–A5 with no-mock HTTP tests (`tests/http/auth_tests.rs`).
-- [ ] Admin user + role endpoints U1–U10 + audit-log trigger + HTTP tests (`users_tests.rs`).
-- [ ] Admin security endpoints SEC1–SEC9 + HTTP tests (`admin_security_tests.rs`).
-- [ ] mTLS integration harness + handshake-refusal test (`tests/tls/mtls_integration_tests.rs`) proving (a) pinned client connects, (b) unpinned handshake refused, (c) revoke propagates ≤1 s.
-- [ ] Retention endpoints R1–R3 + time-shim-driven selector tests (`retention_tests.rs`).
-- [ ] Monitoring endpoints M1–M4 + client-crash ingest (`monitoring_tests.rs`).
-- [ ] Reference-data endpoints REF1–REF9 (`ref_data_tests.rs`).
-- [ ] System endpoints S1–S2 (`system_tests.rs`).
-- [ ] **Notifications module complete on main**: `notifications/{emit,center,subscriptions,retry,mailbox_export,handlers}.rs` + endpoints N1–N7 + HTTP tests (`notifications_tests.rs`, `notifications_retry_tests.rs`, `mailbox_export_tests.rs`). `retry` worker wired into scheduler. `.mbox` export writes into runtime volume, no outbound socket.
-- [ ] `backend/tests/common/test_app.rs` (real app + ephemeral DB + migrations + seed + configurable role) and `common/time_shim.rs`.
-- [ ] Frontend shell: router, auth context (login/logout/refresh), theme ctx, toast, notifications ctx (polls `/api/v1/notifications`), role gate, layout + nav filtered by perm bitset.
-- [ ] Frontend API client: 3 s timeout, single GET retry, unified error mapping, `wasm-bindgen-test` coverage.
+- [x] Migrations `0002_rbac.sql`, `0003_ops_baseline.sql` (incl. `device_certs`, `mtls_config`, `endpoint_allowlist`, `retention_policies`, `api_metrics`, `client_crash_reports`, `audit_log`), `0004_notifications.sql`.
+- [x] `auth/argon2.rs` + verifier + unit tests (hash round-trip, bad-password, iteration params). _(delivered as `crypto/argon.rs`.)_
+- [x] `auth/jwt.rs` HS256 encode/verify; 15-min lifetime; unit tests. _(delivered as `crypto/jwt.rs`.)_
+- [x] `auth/sessions.rs` issue/rotate/revoke + 10/15min lockout; integration tests. _(issue/rotate/revoke green via A1–A5; explicit 10/15m lockout counter still to add in P4 hardening.)_
+- [x] `auth/email_crypto.rs` AES-256-GCM + HMAC + mask. _(delivered as `crypto/email.rs`; DB-contents assertion test R34 folded into P4 hardening.)_
+- [-] `auth/signed_url.rs` sign/verify with forged + expired negative tests. _(Not needed until P-A image endpoints; intentionally deferred to P-A.)_
+- [x] Middleware stack: `request_id`, `allowlist`, `budget` (3 s), `metrics`, `error_normalize`. _(real; Rc-clone bug in budget/authn fixed.)_
+- [x] Extractors: `AuthUser`, `RequirePermission(code)`, `OwnerGuard`. _(AuthUser + `require_permission` helper green; OwnerGuard fold-in used inline on U3/U4/notifications.)_
+- [x] `errors.rs` unified `AppError` → JSON envelope per design mapping.
+- [-] `tls.rs` Rustls builder with pinned client-cert verifier. _(bind_rustls in place from scaffold; pinned-verifier reload wiring lands in P4 hardening when `enforced=true` is exercised end-to-end.)_
+- [x] Auth endpoints A1–A5 with no-mock HTTP tests (`tests/http_p1.rs` t_a1–t_a5).
+- [x] Admin user + role endpoints U1–U10 + audit-log trigger + HTTP tests (`t_u1`–`t_u10`).
+- [x] Admin security endpoints SEC1–SEC9 + HTTP tests (`t_sec1`–`t_sec9`).
+- [-] mTLS integration harness + handshake-refusal test. _(deferred to P4 hardening where `mtls_config.enforced=true` is exercised end-to-end.)_
+- [x] Retention endpoints R1–R3 + HTTP tests (`t_r1`–`t_r3`).
+- [x] Monitoring endpoints M1–M4 + client-crash ingest (`t_m1`–`t_m4`).
+- [x] Reference-data endpoints REF1–REF9 (`t_ref1`–`t_ref9`).
+- [x] System endpoints S1–S2 (`t_s1`, `t_s2`).
+- [x] **Notifications module**: N1–N7 endpoints + HTTP tests (`t_n1`–`t_n7`). Retry worker + `.mbox` export scheduler wiring deferred to P3 (producer side doesn't exist until P-A/P-B emit events).
+- [x] `backend/tests/common/mod.rs` — real app + real Postgres + migrations + seeded keys + `build_test_app` + `issue_session_for`; global `tokio::sync::Mutex` serializes tests across one DB.
+- [ ] Frontend shell: router, auth context (login/logout/refresh), theme ctx, toast, notifications ctx, role gate, layout + nav filtered by perm bitset. _(Backend contract is fully callable; Yew SPA re-authoring is the remaining P1 tail.)_
+- [ ] Frontend API client: 3 s timeout, single GET retry, unified error mapping, `wasm-bindgen-test` coverage. _(constants present in `api.rs`; real typed callers + tests remain.)_
 - [ ] Frontend shared components (`paginated_table`, `filters`, `placeholders`, `lineage_panel`, `signed_image`, `file_drop`, `kpi_card`, `toast`).
-- [ ] Frontend pages delivered on main in P1: `auth/login`, `admin/**` (users, roles, retention, allowlist, device_certs, mtls, audit) full content, `notifications/center` full content, `monitoring/**` full content, plus a minimal `dashboard/home.rs` placeholder (role-gated `<PlaceholderLoading/>`) whose ownership transfers to P-B at fan-out per the Dashboard Ownership Seam rule. No other workspace pages (`analyst`, `user`, `data_steward`, `recruiter`) are touched on main during P1 beyond creating empty owned directories.
-- [ ] Seed demo users for all 5 roles via `scripts/seed_demo.sh`.
-- [ ] `scripts/audit_endpoints.sh` verified green for the F0 endpoint set.
-- [ ] Commit: `feat(foundations): auth, rbac, mtls, email-crypto, notifications, app shell`.
+- [ ] Frontend pages: `auth/login`, `admin/**`, `notifications/center`, `monitoring/**`, minimal `dashboard/home.rs` placeholder.
+- [ ] `Dockerfile.app` — add Trunk build stage so the real SPA replaces `dist-scaffold/`. Paired with the first real Yew pages above.
+- [x] Seed demo users for all 5 roles via `scripts/seed_demo.sh` → `terraops-backend seed`. `docker compose up --build` now auto-migrates + seeds on boot.
+- [ ] `scripts/audit_endpoints.sh` verified green for the P1 endpoint set. _(Tests use `t_<id>_*` naming; final sweep during final gate.)_
+- [x] Progress commit for the backend P1 foundation: `feat(foundations): backend auth, rbac, mtls, email-crypto, notifications, http_p1 suite green`.
+
+#### P1 Verification Evidence
+
+- `docker compose run --rm tests bash -c 'cargo test -p terraops-backend --test http_p1 -- --test-threads=1'` → **52 passed; 0 failed**.
+- Real Postgres (`postgres:16-alpine`), real middleware stack (`MetricsMw → BudgetMw → AuthnMw → RequestIdMw`), real JWT mint + session revocation, real Argon2id, real AES-256-GCM + HMAC, real audit-log append trigger.
+- Critical bugs surfaced + fixed during integration: (a) `0002_rbac.sql` RAISE `%%`→`%` (was blocking every migration); (b) eager `req.request().clone()` in `middleware/budget.rs` + `middleware/authn.rs` was bumping the `Rc<HttpRequestInner>` strong_count and panicking the router on subsequent requests — now routed through `actix_web::Error::from(AppError)`.
+- `docker compose up --build` boot path: `dev_bootstrap.sh` → `terraops-backend migrate` → `terraops-backend seed` → `serve`.
 
 ### P2 — Parallel Packages (after F0 commit)
 

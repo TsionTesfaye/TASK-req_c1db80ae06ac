@@ -79,4 +79,4 @@ USER terraops
 EXPOSE 8443
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["bash", "-lc", "/app/scripts/dev_bootstrap.sh && exec terraops-backend serve"]
+CMD ["bash", "-lc", "/app/scripts/dev_bootstrap.sh && terraops-backend migrate && terraops-backend seed && exec terraops-backend serve"]

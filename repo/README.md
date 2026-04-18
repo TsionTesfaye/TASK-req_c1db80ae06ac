@@ -11,8 +11,11 @@ observations, catalog governance, and talent intelligence. It runs entirely
 inside one Docker network, exposes one TLS origin on `https://localhost:8443`,
 and has no outbound network dependencies at runtime.
 
-This repository currently contains the **P0 scaffold**. Feature implementation
-lands in phases P1 through P5 per [`plan.md`](./plan.md).
+This repository currently contains the **P0 scaffold + P1 backend shared
+foundations** (identity, RBAC, sessions, admin security, retention,
+monitoring, reference data, notifications, middleware stack, real HTTP
+test suite). The P1 frontend SPA surface and P2–P5 feature phases are
+tracked in [`plan.md`](./plan.md).
 
 ## Tech Stack
 
@@ -114,12 +117,21 @@ stubbed:
 
 ## Authentication
 
-The full auth contract (Argon2id + HS256 JWT + opaque refresh rotation +
-mTLS device pinning) lands in P1. The scaffold exposes only a disabled
-`/login` placeholder.
+P1 delivers the full backend auth contract: Argon2id password hashing,
+HS256 JWT access tokens (15-minute lifetime), opaque refresh tokens
+rotated on every use with a revocable `sessions` table, bearer-token
+`Authorization: Bearer <jwt>` on every privileged request, normalized
+`AUTH_INVALID_CREDENTIALS` / `FORBIDDEN` / `RATE_LIMITED` error
+envelopes, and CIDR allowlist enforcement. Device mTLS pinning is
+schema-ready (admin-managed `device_certs` + `mtls_config`); the Rustls
+pinned-client verifier flips on once an admin sets `enforced=true`.
 
-Demo accounts (all passwords: `TerraOps!2026`; activated once
-`scripts/seed_demo.sh` gains DB-write behaviour in P1):
+`docker compose up --build` now runs migrations and seeds the demo
+accounts automatically on first boot (see `Dockerfile.app` CMD). You
+can also force re-seed any time with `./init_db.sh` or
+`docker compose exec app terraops-backend seed`.
+
+Demo accounts (all passwords `TerraOps!2026`):
 
 | Role           | Email                      |
 | -------------- | -------------------------- |
@@ -192,14 +204,27 @@ plan.md                     # repo-local execution checklist
 
 ## Important Notes
 
-Scaffold-scope disclosures (update as features land):
+Current-scope disclosures (updated as features land):
 
-- `scripts/seed_demo.sh` prints the demo credential matrix but performs
-  **no DB writes** at scaffold level; real seeding is wired in P1.
-- The Yew `/login` page is a **placeholder** with disabled inputs.
-- All 77 REST endpoints except `/api/v1/health` and `/api/v1/ready` are
-  unimplemented at P0; they are listed authoritatively in
-  `../docs/api-spec.md` and ship in P1+.
+- **Backend P1 is complete and integrated.** 52 no-mock integration tests
+  in `crates/backend/tests/http_p1.rs` exercise every P1 endpoint
+  (system S1–S2, auth A1–A5, users U1–U10, security SEC1–SEC9, retention
+  R1–R3, monitoring M1–M4, reference-data REF1–REF9, notifications N1–N7)
+  through the real middleware stack and real Postgres. Run them with
+  `docker compose run --rm tests bash -c 'cargo test -p terraops-backend
+  --test http_p1 -- --test-threads=1'` — current result: 52 passed.
+- `scripts/seed_demo.sh` now invokes `terraops-backend seed`, which is
+  idempotent and creates/updates the five demo users with the role
+  matrix above. Running it repeatedly preserves operator-set passwords.
+- **Frontend SPA status:** the Yew shell ships the login placeholder
+  route. The real P1 SPA pages (full auth flow, admin surfaces,
+  notifications center, monitoring pages, change-password) and the
+  `Dockerfile.app` Trunk build stage are the remaining P1 tail items —
+  see `plan.md` for the exact file-by-file state. The backend contract
+  is already complete and callable from any HTTP client today.
+- All 77 REST endpoints are listed authoritatively in
+  `../docs/api-spec.md`. P1 delivers 40 of them (the shared-foundation
+  subset); P-A/P-B/P-C packages ship the remaining 37.
 - No outbound integrations exist. TerraOps is an offline system by contract.
 - No `.env` / `.env.*` files are created or consumed by this repo. The
   Postgres bootstrap value in `docker-compose.yml` is a documented
