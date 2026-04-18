@@ -1,0 +1,13 @@
+{
+  "name": "terraops-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TerraOps Playwright flow specs. Runs inside Dockerfile.tests.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.47.2",
+    "typescript": "5.5.4"
+  }
+}

@@ -1,0 +1,73 @@
+# TerraOps — single-node offline deployment.
+#
+# Canonical runtime:   docker compose up --build
+# Legacy compatibility: docker-compose up
+#
+# One long-lived `app` service serves the Yew SPA and the Actix-web REST API
+# on the same TLS port (:8443). A single `db` service holds Postgres. The
+# `tests` profile spins up an ephemeral runner image; see `./run_tests.sh`.
+#
+# No `.env` file is read. Dev-only runtime secrets are generated on first
+# boot by `scripts/dev_bootstrap.sh` into the `terraops-runtime` volume.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      # Dev-only bootstrap values. These are NOT production secrets; the
+      # production secret-management path is documented in README.md.
+      # They are kept here (not in a checked-in .env file) so that
+      # `docker compose up --build` runs with zero manual setup.
+      POSTGRES_USER: terraops
+      POSTGRES_PASSWORD: terraops_local_dev_only
+      POSTGRES_DB: terraops
+    volumes:
+      - terraops-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U terraops -d terraops"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://terraops:terraops_local_dev_only@db:5432/terraops"
+      TERRAOPS_BIND_ADDR: "0.0.0.0:8443"
+      TERRAOPS_STATIC_DIR: "/app/dist"
+      TERRAOPS_TLS_CERT: "/runtime/certs/server.crt"
+      TERRAOPS_TLS_KEY: "/runtime/certs/server.key"
+      RUST_LOG: "info,sqlx=warn"
+    ports:
+      - "8443:8443"
+    volumes:
+      - terraops-runtime:/runtime
+    restart: unless-stopped
+
+  tests:
+    profiles: ["tests"]
+    build:
+      context: .
+      dockerfile: Dockerfile.tests
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://terraops:terraops_local_dev_only@db:5432/terraops"
+      RUST_LOG: "warn"
+    volumes:
+      - .:/workspace
+      - terraops-runtime:/runtime
+    working_dir: /workspace
+    # `./run_tests.sh` invokes this service with the correct command.
+    command: ["bash", "-lc", "echo 'tests profile — invoked by ./run_tests.sh'"]
+
+volumes:
+  terraops-db:
+  terraops-runtime:

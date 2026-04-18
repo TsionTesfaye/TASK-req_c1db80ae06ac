@@ -1,0 +1,30 @@
+[package]
+name = "terraops-frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "terraops-frontend"
+path = "src/main.rs"
+
+[dependencies]
+terraops-shared = { path = "../shared" }
+
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Storage"] }
+
+gloo-net = { version = "0.5", features = ["http"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

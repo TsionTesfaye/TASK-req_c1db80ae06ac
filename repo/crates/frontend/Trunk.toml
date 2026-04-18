@@ -1,0 +1,24 @@
+# Trunk build configuration for the Yew SPA.
+# Output is written to `dist/` and copied into the final `Dockerfile.app` stage
+# as `/app/dist/`, which is served by the backend binary.
+
+[build]
+target = "index.html"
+dist   = "dist"
+release = true
+filehash = true
+offline = true
+
+[serve]
+# Dev-only convenience; production serving is handled by the Actix backend,
+# not by `trunk serve`. The canonical runtime is `docker compose up --build`.
+address = "127.0.0.1"
+port = 8080
+
+[[hooks]]
+stage = "build"
+command = "sh"
+command_arguments = ["-c", "echo '[trunk] tailwind build hook placeholder — wired in P1'"]
+
+[tools]
+wasm_bindgen = "0.2.92"

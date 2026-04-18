@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+#
+# TerraOps test runner image — SCAFFOLD (P0) variant.
+#
+# At scaffold we keep this image minimal and honest: it gives `run_tests.sh`
+# a container with `cargo` + `bash` + `jq` available, which is enough for
+# the broad-gate wiring to be truthful at scaffold (only Gate 3 runs
+# actively at scaffold). Heavy P1+ tooling (`cargo-llvm-cov`, `grcov`,
+# `wasm-bindgen-test` runner, Node, pinned Chromium, Playwright browsers)
+# is deferred to the first phase that actually needs it.
+#
+# Why this is safe under the accepted scaffold contract:
+#   * `./run_tests.sh` does not yet execute Gate 1/Gate 2/Flow gate at
+#     scaffold (no Rust tests and no WASM tests exist yet in the repo).
+#   * When P1 adds the first Rust test, Gate 1 is wired up here AND in
+#     `run_tests.sh` in the same commit. The test runner image grows
+#     together with the test surface, not ahead of it.
+#   * No `cargo install` happens at scaffold, which was the primary source
+#     of the owner-reported network-timeout failures during scaffold build.
+
+FROM rust:1.88-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_TERM_COLOR=never \
+    CARGO_NET_RETRY=10 \
+    CARGO_HTTP_MULTIPLEXING=false \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash git curl ca-certificates jq \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace

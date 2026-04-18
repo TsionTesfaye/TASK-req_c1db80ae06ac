@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" width="160" height="48">
+  <g fill="#2b4a28">
+    <path d="M8 34 L20 10 L32 34 Z"/>
+    <text x="40" y="32" font-family="system-ui, sans-serif" font-weight="700" font-size="22">TerraOps</text>
+  </g>
+</svg>
