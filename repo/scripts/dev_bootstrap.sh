@@ -27,7 +27,7 @@ gen_key() {
     fi
 }
 
-gen_key "${SECRETS_DIR}/jwt.key"         64
+gen_key "${SECRETS_DIR}/jwt.key"         32
 gen_key "${SECRETS_DIR}/email_enc.key"   32
 gen_key "${SECRETS_DIR}/email_hmac.key"  32
 gen_key "${SECRETS_DIR}/image_hmac.key"  32

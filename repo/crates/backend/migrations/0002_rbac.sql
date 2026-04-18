@@ -127,7 +127,7 @@ CREATE INDEX IF NOT EXISTS ix_audit_log_action ON audit_log (action);
 
 CREATE OR REPLACE FUNCTION audit_log_immutable() RETURNS TRIGGER AS $$
 BEGIN
-    RAISE EXCEPTION 'audit_log is append-only (action=%%)', TG_OP;
+    RAISE EXCEPTION 'audit_log is append-only (action=%)', TG_OP;
 END;
 $$ LANGUAGE plpgsql;
 

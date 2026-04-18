@@ -14,6 +14,7 @@ pub mod errors;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
+pub mod seed;
 pub mod services;
 pub mod spa;
 pub mod state;

@@ -39,7 +39,10 @@ impl RuntimeKeys {
 
     /// Pure in-memory constructor used by integration tests so each test
     /// process has a deterministic, known key set without touching the FS.
-    #[cfg(any(test, feature = "test-utils"))]
+    ///
+    /// Always compiled in: the bytes are fixed constants and the harness
+    /// in `tests/common/mod.rs` needs this symbol in an integration-test
+    /// build where `#[cfg(test)]` is not set on the lib crate.
     pub fn for_testing() -> Self {
         Self {
             jwt: [1; 32],

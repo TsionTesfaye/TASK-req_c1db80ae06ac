@@ -1,15 +1,14 @@
 //! TerraOps backend entrypoint.
 //!
-//! Scaffold-level responsibilities:
-//! - Parse CLI: `serve` | `migrate`.
-//! - Load config (env-only; no `.env`).
-//! - Bring up TLS with `rustls`, serve the Yew SPA from `dist/` and the REST
-//!   API under `/api/v1/**`, on a single port.
+//! Subcommands:
+//!   * `serve`   — run the HTTPS server
+//!   * `migrate` — apply SQL migrations
+//!   * `seed`    — seed the five canonical demo users (idempotent)
 //!
-//! Feature handlers arrive in P1 and beyond per `plan.md`.
+//! All runtime values come from env vars; `.env` files are never read.
 
 use clap::{Parser, Subcommand};
-use terraops_backend::{app, config, db};
+use terraops_backend::{app, config, db, seed};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Debug, Parser)]
@@ -23,13 +22,15 @@ struct Cli {
 enum Cmd {
     /// Run the HTTPS server.
     Serve,
-    /// Apply pending SQL migrations from `crates/backend/migrations/`.
+    /// Apply pending SQL migrations.
     Migrate,
+    /// Seed the five canonical demo users. Idempotent.
+    Seed,
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn"));
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().json())
@@ -46,6 +47,13 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&cfg).await?;
             db::run_migrations(&pool).await?;
             tracing::info!("migrations applied");
+            Ok(())
+        }
+        Cmd::Seed => {
+            let pool = db::connect(&cfg).await?;
+            let keys = terraops_backend::crypto::keys::RuntimeKeys::load_or_init(&cfg.runtime_dir)?;
+            seed::seed_demo(&pool, &keys).await?;
+            tracing::info!("demo users seeded");
             Ok(())
         }
         Cmd::Serve => app::run(cfg).await,

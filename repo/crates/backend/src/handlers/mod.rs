@@ -1,8 +1,24 @@
 //! HTTP route handlers, grouped by feature domain.
-//!
-//! P1: auth, users, security (allowlist/mTLS/device_certs), retention,
-//! monitoring, ref_data, notifications, system (health/ready).
-//! P-A: products, imports, images, product_history.
-//! P-B: env_sources, observations, metrics, kpi, alerts, reports.
-//! P-C: candidates, roles_open, talent_search, recommendations, watchlists,
-//!      feedback, preference_weights.
+
+pub mod auth;
+pub mod monitoring;
+pub mod notifications;
+pub mod ref_data;
+pub mod retention;
+pub mod security;
+pub mod system;
+pub mod users;
+
+use actix_web::web;
+
+/// Mount every P1 route family under `/api/v1`.
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    system::configure(cfg);
+    auth::configure(cfg);
+    users::configure(cfg);
+    security::configure(cfg);
+    retention::configure(cfg);
+    monitoring::configure(cfg);
+    ref_data::configure(cfg);
+    notifications::configure(cfg);
+}
