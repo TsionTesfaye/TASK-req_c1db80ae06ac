@@ -94,14 +94,14 @@ async fn patch_retention(
 }
 
 /// Enforce a retention policy. Deletion targets per design §Retention:
-///   env_raw  → `env_observations` (created later; no-op until P-B)
-///   kpi      → `kpi_snapshots`    (created later; no-op until P-B)
-///   feedback → `talent_feedback`  (created later; no-op until P-C)
+///   env_raw  → `env_observations` (observed_at < NOW() - ttl days)
+///   kpi      → `kpi_rollup_daily` (day < CURRENT_DATE - ttl days)
+///   feedback → `talent_feedback`  (created_at < NOW() - ttl days)
 ///   audit    → `audit_log`        (0 = indefinite, never deletes)
 ///
-/// In P1 we set `last_enforced_at` and report `deleted = 0` for the domains
-/// whose target tables do not yet exist, so the admin can verify the flow
-/// end-to-end without waiting on the catalog/env/talent packages.
+/// `ttl=0` is treated as "retain indefinitely" for every domain.
+/// The operation is idempotent: calling it twice in a row with no new
+/// data causes the second call to report `deleted = 0`.
 async fn run_retention(
     user: AuthUser,
     state: web::Data<AppState>,
@@ -118,13 +118,37 @@ async fn run_retention(
     let ttl = ttl.ok_or(AppError::NotFound)?.0;
 
     let deleted: i64 = match domain.as_str() {
-        "audit" => 0, // `audit` is indefinite by policy; 0 is the correct answer.
+        "audit" => 0, // `audit` is indefinite by policy.
         _ if ttl == 0 => 0,
-        _ => {
-            // Target tables for env_raw/kpi/feedback land in P-B/P-C. Until
-            // then we have no rows to remove — report 0 honestly.
-            0
+        "env_raw" => {
+            let sql = format!(
+                "DELETE FROM env_observations \
+                 WHERE observed_at < NOW() - ($1::int || ' days')::interval"
+            );
+            let res = sqlx::query(&sql).bind(ttl).execute(&state.pool).await?;
+            res.rows_affected() as i64
         }
+        "kpi" => {
+            let res = sqlx::query(
+                "DELETE FROM kpi_rollup_daily \
+                 WHERE day < (CURRENT_DATE - ($1::int || ' days')::interval)::date",
+            )
+            .bind(ttl)
+            .execute(&state.pool)
+            .await?;
+            res.rows_affected() as i64
+        }
+        "feedback" => {
+            let res = sqlx::query(
+                "DELETE FROM talent_feedback \
+                 WHERE created_at < NOW() - ($1::int || ' days')::interval",
+            )
+            .bind(ttl)
+            .execute(&state.pool)
+            .await?;
+            res.rows_affected() as i64
+        }
+        _ => 0,
     };
 
     sqlx::query(
