@@ -100,3 +100,80 @@ fn load_or_init_32(path: &PathBuf) -> anyhow::Result<[u8; 32]> {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn unique_tmp_dir(label: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "terraops-keys-test-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&p).expect("mkdir tmp");
+        p
+    }
+
+    #[test]
+    fn for_testing_returns_distinct_deterministic_bytes() {
+        let k = RuntimeKeys::for_testing();
+        assert_eq!(k.jwt, [1u8; 32]);
+        assert_eq!(k.email_enc, [2u8; 32]);
+        assert_eq!(k.email_hmac, [3u8; 32]);
+        assert_eq!(k.image_hmac, [4u8; 32]);
+    }
+
+    #[test]
+    fn load_or_init_creates_keys_when_missing_and_persists_them() {
+        let dir = unique_tmp_dir("init");
+        let first = RuntimeKeys::load_or_init(&dir).expect("first init");
+        // Files now exist with 0o600 perms.
+        for name in ["jwt.key", "email_enc.key", "email_hmac.key", "image_hmac.key"] {
+            let p = dir.join("secrets").join(name);
+            assert!(p.exists(), "{name} should exist");
+            let meta = fs::metadata(&p).unwrap();
+            assert_eq!(meta.len(), 32);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            }
+        }
+        // Re-loading reads the same bytes back.
+        let again = RuntimeKeys::load_or_init(&dir).expect("reload");
+        assert_eq!(first.jwt, again.jwt);
+        assert_eq!(first.email_enc, again.email_enc);
+        assert_eq!(first.email_hmac, again.email_hmac);
+        assert_eq!(first.image_hmac, again.image_hmac);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_init_accepts_64_char_hex_format() {
+        let dir = unique_tmp_dir("hex");
+        let secrets = dir.join("secrets");
+        fs::create_dir_all(&secrets).unwrap();
+        let hex_bytes = "a".repeat(64); // 32 bytes worth of 0xAA
+        for name in ["jwt.key", "email_enc.key", "email_hmac.key", "image_hmac.key"] {
+            let mut f = File::create(secrets.join(name)).unwrap();
+            f.write_all(hex_bytes.as_bytes()).unwrap();
+        }
+        let k = RuntimeKeys::load_or_init(&dir).expect("hex load");
+        assert_eq!(k.jwt, [0xAAu8; 32]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_init_rejects_invalid_length_file() {
+        let dir = unique_tmp_dir("bad");
+        let secrets = dir.join("secrets");
+        fs::create_dir_all(&secrets).unwrap();
+        // Wrong length AND not valid hex either.
+        let mut f = File::create(secrets.join("jwt.key")).unwrap();
+        f.write_all(b"too-short-and-not-hex").unwrap();
+        let res = RuntimeKeys::load_or_init(&dir);
+        assert!(res.is_err(), "expected load error, got Ok");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

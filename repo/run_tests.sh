@@ -11,7 +11,7 @@
 #     real Postgres, serialised with `--test-threads=1` because they
 #     share one DB. Line coverage is measured end-to-end with
 #     `cargo llvm-cov` and enforced against the planning-contract floor
-#     `GATE1_LINE_FLOOR=90` over `crates/shared/**` + `crates/backend/src/**`
+#     `GATE1_LINE_FLOOR=94` over `crates/shared/**` + `crates/backend/src/**`
 #     excluding pure-IO boot modules (`main.rs`, `app.rs`, `tls.rs`,
 #     `spa.rs`, `config.rs`, `db.rs`, `storage/`, `models/`, `seed.rs`)
 #     which are exercised by `docker compose up --build` rather than
@@ -76,13 +76,14 @@ failed=0
 # (shared + backend). The ignore regex below excludes pure-IO boot/plumbing
 # modules that are exercised end-to-end by `docker compose up --build`
 # rather than by cargo tests.
-GATE1_LINE_FLOOR="${GATE1_LINE_FLOOR:-90}"
+GATE1_LINE_FLOOR="${GATE1_LINE_FLOOR:-94}"
 GATE1_IGNORE_REGEX='/(tests|migrations|\.sqlx)/|backend/src/(main|app|tls|spa|config|db|seed)\.rs|backend/src/(storage|models)/|backend/src/telemetry\.rs'
 
 GATE1_TESTS=(http_p1 parity_tests talent_search_tests talent_recommend_tests \
              talent_weights_tests talent_watchlist_tests talent_feedback_tests \
              integration_tests mtls_handshake_tests budget_tests \
-             deep_products_tests deep_metrics_kpi_tests deep_alerts_reports_tests)
+             deep_products_tests deep_metrics_kpi_tests deep_alerts_reports_tests \
+             deep_admin_surface_tests deep_jobs_scheduler_tests)
 
 section "Gate 1 — cargo test + cargo llvm-cov (terraops-backend + terraops-shared, --fail-under-lines ${GATE1_LINE_FLOOR})"
 if ! compose build tests; then

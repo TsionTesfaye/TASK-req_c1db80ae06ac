@@ -134,7 +134,8 @@ Run the broad test gate from the repo root:
   measured by `cargo llvm-cov` across the backend `--lib` unit tests
   **and** every backend test binary (so `#[cfg(test)]` modules inside
   `crates/backend/src/**` contribute too) and enforced against the
-  planning-contract floor `GATE1_LINE_FLOOR=90`. The coverage scope
+  planning-contract floor `GATE1_LINE_FLOOR=94` (currently measured at
+  ~94.83% lines). The coverage scope
   excludes pure-IO boot modules (`main.rs`, `app.rs`, `tls.rs`, `spa.rs`,
   `config.rs`, `db.rs`, `seed.rs`, `storage/`, `models/`) which are
   exercised end-to-end by `docker compose up --build` rather than by

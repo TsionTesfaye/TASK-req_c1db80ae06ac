@@ -110,3 +110,40 @@ pub struct ComputationLineage {
     pub window_end: DateTime<Utc>,
     pub computed_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formula_kind_str_roundtrip_for_every_variant() {
+        for (k, s) in [
+            (FormulaKind::MovingAverage, "moving_average"),
+            (FormulaKind::RateOfChange, "rate_of_change"),
+            (FormulaKind::ComfortIndex, "comfort_index"),
+        ] {
+            assert_eq!(k.as_str(), s);
+            assert_eq!(FormulaKind::from_str(s), Some(k.clone()));
+        }
+        assert_eq!(FormulaKind::from_str("bogus"), None);
+        assert_eq!(FormulaKind::from_str(""), None);
+    }
+
+    #[test]
+    fn formula_kind_serde_uses_snake_case() {
+        let s = serde_json::to_string(&FormulaKind::ComfortIndex).unwrap();
+        assert_eq!(s, "\"comfort_index\"");
+        let back: FormulaKind = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, FormulaKind::ComfortIndex);
+    }
+
+    #[test]
+    fn series_point_roundtrip() {
+        let at = chrono::Utc::now();
+        let sp = SeriesPoint { at, value: 42.5 };
+        let j = serde_json::to_value(&sp).unwrap();
+        let back: SeriesPoint = serde_json::from_value(j).unwrap();
+        assert_eq!(back.value, 42.5);
+        assert_eq!(back.at, at);
+    }
+}

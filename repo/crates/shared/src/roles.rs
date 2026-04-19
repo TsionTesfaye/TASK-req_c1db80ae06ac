@@ -45,3 +45,35 @@ impl Role {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_as_db_and_display_are_stable_for_every_variant() {
+        let expected: &[(Role, &str, &str)] = &[
+            (Role::Administrator, "administrator", "Administrator"),
+            (Role::DataSteward, "data_steward", "Data Steward"),
+            (Role::Analyst, "analyst", "Analyst"),
+            (Role::Recruiter, "recruiter", "Recruiter"),
+            (Role::RegularUser, "regular_user", "Regular User"),
+        ];
+        for (r, db, disp) in expected {
+            assert_eq!(r.as_db(), *db, "unexpected as_db for {r:?}");
+            assert_eq!(r.display(), *disp, "unexpected display for {r:?}");
+        }
+        assert_eq!(Role::ALL.len(), expected.len());
+        for (r, _, _) in expected {
+            assert!(Role::ALL.contains(r), "{r:?} missing from ALL");
+        }
+    }
+
+    #[test]
+    fn role_serde_snake_case() {
+        let s = serde_json::to_string(&Role::DataSteward).unwrap();
+        assert_eq!(s, "\"data_steward\"");
+        let back: Role = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, Role::DataSteward);
+    }
+}

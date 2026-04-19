@@ -44,11 +44,11 @@ Definitive repo-local execution checklist. Derived from `../docs/design.md`; end
   - First-boot entrypoint: `scripts/dev_bootstrap.sh` generates any missing secrets/certs into Docker volume `terraops-runtime`. No `.env` in the repo.
 - **Required broad test contract**:
   - Repo-root `./run_tests.sh` brings up Compose `tests` profile and runs the exact commands documented in `docs/test-coverage.md §Coverage Gate Math` (no drift):
-    - Gate 1: `cargo llvm-cov --no-fail-fast -p terraops-shared -p terraops-backend --ignore-filename-regex '/(tests|migrations|\.sqlx)/' --fail-under-lines 90 --lcov --output-path coverage/rust.lcov` (explicit `-p` flags restrict scope to the two native Rust crates; `--workspace` is intentionally not used so the frontend crate cannot contribute to `coverage/rust.lcov`)
+    - Gate 1: `cargo llvm-cov --no-fail-fast -p terraops-shared -p terraops-backend --ignore-filename-regex '/(tests|migrations|\.sqlx)/' --fail-under-lines 94 --lcov --output-path coverage/rust.lcov` (explicit `-p` flags restrict scope to the two native Rust crates; `--workspace` is intentionally not used so the frontend crate cannot contribute to `coverage/rust.lcov`). Currently measured at ~94.83% lines.
     - Gate 2: `cargo test -p terraops-frontend --target wasm32-unknown-unknown` with `RUSTFLAGS='-C instrument-coverage'`, then `grcov … --threshold 80 -o coverage/frontend.lcov`
     - Gate 3: `scripts/audit_endpoints.sh` (mode decided by presence of `crates/backend/tests/.audit_strict`)
     - Flow: `npx --prefix e2e playwright test` (all 7 specs must pass)
-  - **Authoritative threshold sentence** (identical wording in `../docs/design.md` and `../docs/test-coverage.md`): The 90% line-coverage floor applies only to `crates/shared` + `crates/backend` (Rust native code). The `crates/frontend` Yew/WASM crate has its own separately enforced 80% line-coverage floor. Playwright contributes flow verification only and does not contribute to either line-coverage number.
+  - **Authoritative threshold sentence** (identical wording in `../docs/design.md` and `../docs/test-coverage.md`): The 94% line-coverage floor applies only to `crates/shared` + `crates/backend` (Rust native code). The `crates/frontend` Yew/WASM crate has its own separately enforced 80% line-coverage floor (raised to 90% as a soft target where the upstream wasm32 source-coverage gap permits real measurement). Playwright contributes flow verification only and does not contribute to either line-coverage number.
 - **Required scaffold files and scripts**:
   - `Cargo.toml` (workspace), `Cargo.lock`
   - `docker-compose.yml`, `Dockerfile.app`, `Dockerfile.tests` (no `Dockerfile.frontend`)
