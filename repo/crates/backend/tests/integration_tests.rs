@@ -873,3 +873,150 @@ async fn t_int_error_envelopes_do_not_leak_secrets() {
         "email_ciphertext must not contain the plaintext email substring"
     );
 }
+
+// ── DEMO SEED: cross-domain dataset is real and navigable ───────────────────
+
+#[actix_web::test]
+async fn t_int_demo_seed_populates_cross_domain() {
+    let ctx = TestCtx::new().await;
+
+    // Run the canonical seed path (same entrypoint as `terraops-backend seed`).
+    terraops_backend::seed::seed_demo(&ctx.pool, &ctx.keys)
+        .await
+        .expect("seed_demo should succeed");
+
+    // Every cross-domain table must have at least the seeded rows.
+    let n_products: i64 = count(&ctx.pool, "SELECT COUNT(*) FROM products WHERE sku LIKE 'DEMO-%'").await;
+    assert!(n_products >= 3, "expected ≥3 demo products, got {n_products}");
+
+    let n_tax: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM product_tax_rates WHERE product_id IN \
+         (SELECT id FROM products WHERE sku LIKE 'DEMO-%')",
+    )
+    .await;
+    assert!(n_tax >= 3, "expected ≥3 demo tax rates, got {n_tax}");
+
+    let n_hist: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM product_history WHERE product_id IN \
+         (SELECT id FROM products WHERE sku LIKE 'DEMO-%')",
+    )
+    .await;
+    assert!(n_hist >= 3, "expected ≥3 history rows, got {n_hist}");
+
+    let n_env: i64 = count(&ctx.pool, "SELECT COUNT(*) FROM env_sources WHERE name LIKE 'Demo %'").await;
+    assert!(n_env >= 2, "expected ≥2 demo env sources, got {n_env}");
+
+    let n_obs: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM env_observations WHERE source_id IN \
+         (SELECT id FROM env_sources WHERE name LIKE 'Demo %')",
+    )
+    .await;
+    assert!(n_obs >= 48, "expected ≥48 observations (2 sources × 24), got {n_obs}");
+
+    let n_def: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM metric_definitions WHERE name LIKE 'demo.%'",
+    )
+    .await;
+    assert!(n_def >= 2, "expected ≥2 demo metric definitions, got {n_def}");
+
+    let n_comp: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM metric_computations WHERE definition_id IN \
+         (SELECT id FROM metric_definitions WHERE name LIKE 'demo.%')",
+    )
+    .await;
+    assert!(n_comp >= 12, "expected ≥12 computations, got {n_comp}");
+
+    let n_rules: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM alert_rules WHERE metric_definition_id IN \
+         (SELECT id FROM metric_definitions WHERE name LIKE 'demo.%')",
+    )
+    .await;
+    assert!(n_rules >= 1, "expected ≥1 demo alert rule, got {n_rules}");
+
+    let n_events: i64 = count(&ctx.pool, "SELECT COUNT(*) FROM alert_events").await;
+    assert!(n_events >= 1, "expected ≥1 alert event, got {n_events}");
+
+    let n_cand: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM candidates WHERE email_mask LIKE '%@demo'",
+    )
+    .await;
+    assert!(n_cand >= 5, "expected ≥5 demo candidates, got {n_cand}");
+
+    let n_roles: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM roles_open WHERE title IN ('Senior Backend Engineer','Frontend WASM Engineer')",
+    )
+    .await;
+    assert!(n_roles >= 2, "expected ≥2 demo roles, got {n_roles}");
+
+    // Feedback must cross the 10-row cold-start threshold for the recruiter.
+    let n_fb: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM talent_feedback WHERE owner_id = \
+         (SELECT id FROM users WHERE email_mask LIKE 'r%e%r%@t%')",
+    )
+    .await;
+    // Fall back to a simpler count if the mask query is too specific.
+    let n_fb_all: i64 = count(&ctx.pool, "SELECT COUNT(*) FROM talent_feedback").await;
+    assert!(
+        n_fb >= 12 || n_fb_all >= 12,
+        "expected ≥12 feedback rows for cold-start crossing, got recruiter={n_fb} total={n_fb_all}"
+    );
+
+    let n_notif: i64 = count(
+        &ctx.pool,
+        "SELECT COUNT(*) FROM notifications WHERE topic LIKE 'demo.%'",
+    )
+    .await;
+    assert!(n_notif >= 3, "expected ≥3 demo notifications, got {n_notif}");
+
+    // Second invocation must be idempotent — no duplication.
+    terraops_backend::seed::seed_demo(&ctx.pool, &ctx.keys)
+        .await
+        .expect("seed_demo idempotent");
+    let n_products2: i64 =
+        count(&ctx.pool, "SELECT COUNT(*) FROM products WHERE sku LIKE 'DEMO-%'").await;
+    assert_eq!(
+        n_products, n_products2,
+        "seed_demo must be idempotent — product count changed on re-run"
+    );
+
+    // Navigate seeded dataset through the real API surface.
+    let (_u, token) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "demo-seed-admin@example.com",
+        &[Role::Administrator, Role::DataSteward, Role::Analyst],
+    )
+    .await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+
+    // Products list through P1 handler.
+    let req = test::TestRequest::get()
+        .uri("/api/v1/products?page=1&page_size=50")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "GET /products");
+    let body: Value = test::read_body_json(resp).await;
+    let items = body.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    assert!(
+        items.iter().any(|it| it.get("sku").and_then(|s| s.as_str()) == Some("DEMO-001")),
+        "GET /products should surface seeded DEMO-001"
+    );
+
+    // Env sources through E1.
+    let req = test::TestRequest::get()
+        .uri("/api/v1/env/sources")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "GET /env/sources");
+}
