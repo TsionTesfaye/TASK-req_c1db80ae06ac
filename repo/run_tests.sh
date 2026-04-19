@@ -73,7 +73,14 @@ else
     if ! compose run --rm tests \
             bash -c 'cargo --version \
               && cargo test -p terraops-shared --no-fail-fast \
-              && cargo test -p terraops-backend --test http_p1 -- --test-threads=1'; then
+              && cargo test -p terraops-backend --test http_p1            -- --test-threads=1 \
+              && cargo test -p terraops-backend --test parity_tests       -- --test-threads=1 \
+              && cargo test -p terraops-backend --test talent_search_tests     -- --test-threads=1 \
+              && cargo test -p terraops-backend --test talent_recommend_tests  -- --test-threads=1 \
+              && cargo test -p terraops-backend --test talent_weights_tests    -- --test-threads=1 \
+              && cargo test -p terraops-backend --test talent_watchlist_tests  -- --test-threads=1 \
+              && cargo test -p terraops-backend --test talent_feedback_tests   -- --test-threads=1 \
+              && cargo test -p terraops-backend --test integration_tests       -- --test-threads=1'; then
         echo "[gate1] FAILED — cargo test reported failures." >&2
         failed=1
     fi
@@ -97,11 +104,35 @@ if ! bash "${REPO_ROOT}/scripts/audit_endpoints.sh"; then
     failed=1
 fi
 
-# ---- Flow gate : deferred (no spec yet) -----------------------------------
+# ---- Flow gate : Playwright specs -----------------------------------------
 section "Flow gate — Playwright specs"
-echo "[deferred] No Playwright specs exist in e2e/ yet; pinned Chromium and Playwright"
-echo "[deferred]   browsers are intentionally not provisioned in Dockerfile.tests."
-echo "[deferred]   Wired alongside the first real flow spec in a later phase."
+if [[ "${TERRAOPS_RUN_FLOW:-0}" == "1" ]]; then
+    # Bring the `app` service up (TLS on 8443) so specs have a real target.
+    compose up -d app
+    # Wait for /api/v1/health to answer 200 before running specs.
+    for i in $(seq 1 60); do
+        if curl -ks https://localhost:8443/api/v1/health | grep -q '"status":"ok"'; then
+            break
+        fi
+        sleep 1
+    done
+    if ! compose run --rm --no-deps \
+            -e PLAYWRIGHT_BROWSERS_PATH=/workspace/e2e/.pw-browsers \
+            tests bash -c '
+                cd e2e \
+                && npm ci --no-audit --no-fund \
+                && npx playwright install chromium \
+                && npx playwright test --reporter=list'; then
+        echo "[flow] FAILED — Playwright specs reported failures." >&2
+        failed=1
+    fi
+else
+    echo "[deferred] Flow gate runs on demand. Set TERRAOPS_RUN_FLOW=1 to execute the"
+    echo "[deferred]   Playwright specs in e2e/specs/ against the live \`app\` service."
+    echo "[deferred]   Specs exist (7 flows) and Dockerfile.tests carries the runtime"
+    echo "[deferred]   libraries for pinned Chromium; browsers are downloaded on first"
+    echo "[deferred]   opt-in run via \`npx playwright install chromium\`."
+fi
 
 if [[ ${failed} -ne 0 ]]; then
     echo ""

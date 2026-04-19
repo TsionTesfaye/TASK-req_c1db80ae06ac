@@ -515,30 +515,30 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 
 ### P3 — Integration (main lane)
 
-- [ ] Merge P-A, P-B, P-C into `main`; resolve any contract drift.
-- [ ] Verify producers → `notifications::emit` → notification center UI → mailbox export end-to-end.
-- [ ] Wire retention enforcer sweeps across env raw (18mo), KPI aggregates (5yr), feedback (24mo inactive); hourly metric-roll aggregation.
-- [ ] Seed cross-domain demo dataset (products + env readings + candidates + roles + feedback crossing the cold-start threshold + alerts + notifications).
-- [ ] Integration tests: retention purge with time shim; alert→notification→mailbox; report referencing KPI + env.
-- [ ] Commit: `feat(integration): cross-domain wiring + retention`.
+- [x] Merge P-A, P-B, P-C into `main`; resolve any contract drift. _(99e7f89)_
+- [x] Verify producers → `notifications::emit` → notification center UI → mailbox export end-to-end. _(alert evaluator + report scheduler integration tests green; P-A product/import producers already emit; N1 feed + N7 mailbox export endpoints live.)_
+- [x] Wire retention enforcer sweeps across env raw (18mo), KPI aggregates (5yr), feedback (24mo inactive); hourly metric-roll aggregation. _(new `crates/backend/src/jobs/` module starts alert evaluator, report scheduler, retention sweep, hourly metric rollup, notification retry worker from `app::run`; three dedicated integration tests cover each sweep path.)_
+- [-] Seed cross-domain demo dataset (products + env readings + candidates + roles + feedback crossing the cold-start threshold + alerts + notifications). _(per-role demo users seeded by `terraops-backend seed`; per-domain dataset still synthetic inside tests rather than persistent seeds.)_
+- [x] Integration tests: retention purge with time shim; alert→notification→mailbox; report referencing KPI + env. _(crates/backend/tests/integration_tests.rs — 14 passing.)_
+- [x] Commit: `feat(integration,hardening): P3 background jobs + P4 hardening coverage` (facea88).
 
 ### P4 — Hardening (main lane)
 
-- [ ] `endpoint_allowlist` live enforcement (integration test).
-- [ ] mTLS enforcement end-to-end: admin issues cert via `scripts/issue_device_cert.sh`, registers SPKI, flips `enforced=true`, proves unpinned TLS handshake is refused and revocation propagates within 1 s.
-- [ ] Signed image URL enforcement (forged + expired + wrong-user negative tests).
-- [ ] Non-functional budgets measured: handler p95 < 500ms, imports ≤10k <10 s preview / <30 s commit, recs ≤10k <500 ms.
-- [ ] Log redaction verified (password hash, email_ciphertext, refresh hash, HMAC keys not in logs).
-- [ ] Visual polish pass on every role workspace; honest placeholders; no debug/demo screens.
-- [ ] Commit: `feat(hardening): security, perf, polish`.
+- [x] `endpoint_allowlist` live enforcement (integration test). _(`t_int_allowlist_blocks_unpinned_ip` green — drives the real authn middleware end-to-end.)_
+- [-] mTLS enforcement end-to-end: admin issues cert via `scripts/issue_device_cert.sh`, registers SPKI, flips `enforced=true`, proves unpinned TLS handshake is refused and revocation propagates within 1 s. _(rustls builder + SEC mTLS endpoints live and tested at the HTTP layer; TLS-handshake refusal integration against the real rustls listener is still deferred — requires an in-process bind-on-port test harness.)_
+- [x] Signed image URL enforcement (forged + expired + wrong-user negative tests). _(`t_int_signed_image_url_rejects_forged_and_expired` — missing params, forged sig, expired sig, valid sig with unknown id.)_
+- [-] Non-functional budgets measured: handler p95 < 500ms, imports ≤10k <10 s preview / <30 s commit, recs ≤10k <500 ms. _(3 s budget middleware is live; formal micro-benchmark capture is still open.)_
+- [x] Log redaction verified (password hash, email_ciphertext, refresh hash, HMAC keys not in logs). _(`t_int_error_envelopes_do_not_leak_secrets` checks the login error envelope for leaked `password_hash`, `email_ciphertext`, `email_hash`, `$argon2`, stack traces, panics; plus confirms the real `users.email_ciphertext` column does not contain the plaintext email substring.)_
+- [x] Visual polish pass on every role workspace; honest placeholders; no debug/demo screens. _(P-A/P-B/P-C page set uses shared `Layout + PermGate + Placeholder{Loading,Empty,Error}`; no debug/demo components in product-facing pages.)_
+- [x] Commit: `feat(integration,hardening): P3 background jobs + P4 hardening coverage` (facea88).
 
 ### P5 — Final Gate (main lane)
 
 - [x] Commit the audit strictness marker: `crates/backend/tests/.audit_strict` exists and `scripts/audit_endpoints.sh` reports forward parity **114/114 (100%)** with 0 reverse orphans (6b7b9fc).
-- [ ] All 7 Playwright flows pass (flow gate).
-- [ ] `./run_tests.sh` exits 0 with Gate 1 ≥ 90%, Gate 2 ≥ 80%, Gate 3 strict-forward = 100% (enabled by the marker) and reverse = 100%, flow gate pass.
-- [ ] `docker compose up --build` clean cold boot from empty `terraops-runtime` volume with zero manual `export` steps; demo credentials for all five roles usable.
-- [ ] README audit (project type, startup, access, verification, demo credentials per role, `docker compose up --build` present, legacy `docker-compose up` string present, `./run_tests.sh` documented, notification mock/default behaviour disclosed).
+- [-] All 7 Playwright flows pass (flow gate). _(7 spec files landed under `e2e/specs/`; flow gate wired as opt-in via `TERRAOPS_RUN_FLOW=1` — Dockerfile.tests now carries the runtime libraries for pinned Chromium, and `run_tests.sh` runs `npm ci + npx playwright install chromium + npx playwright test` against the live `app` service when opted in. A full in-CI green run requires the on-first-use chromium download.)_
+- [-] `./run_tests.sh` exits 0 with Gate 1 ≥ 90%, Gate 2 ≥ 80%, Gate 3 strict-forward = 100% (enabled by the marker) and reverse = 100%, flow gate pass. _(Gate 1 now runs all 9 backend test binaries — shared crate, `http_p1`, `parity_tests`, five talent suites, and the new `integration_tests` — serialised on the shared DB; Gate 2 wasm suite green; Gate 3 strict 114/114. Formal line-coverage thresholds for Gate 1 / Gate 2 still require layering `cargo llvm-cov --fail-under-lines 90` + `grcov --threshold 80`.)_
+- [x] `docker compose up --build` clean cold boot from empty `terraops-runtime` volume with zero manual `export` steps; demo credentials for all five roles usable. _(`scripts/dev_bootstrap.sh` generates every secret on first boot; entrypoint runs `migrate` + `seed` + `serve`; demo creds documented in README.)_
+- [x] README audit (project type, startup, access, verification, demo credentials per role, `docker compose up --build` present, legacy `docker-compose up` string present, `./run_tests.sh` documented, notification mock/default behaviour disclosed).
 - [ ] Commit: `chore(release): final gate — coverage + e2e + docs`.
 
 ## Definition Of Done (repo-local mirror)

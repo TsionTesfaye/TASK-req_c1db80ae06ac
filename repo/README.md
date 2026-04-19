@@ -19,7 +19,8 @@ notifications context, typed API client with 3-second timeout +
 single-GET-retry, `PermGate`-aware nav, real admin / monitoring /
 notifications pages), **plus the complete P-A Catalog & Governance,
 P-B Environmental Intelligence / KPI / Alerts / Reports, and P-C Talent
-Intelligence backend packages**:
+Intelligence backend packages**, **plus P3 cross-domain integration
+(background jobs) and P4 hardening coverage**:
 
 - **P-A** — products P1–P14, imports I1–I7, CSV/XLSX streaming export,
   trigger-enforced immutable change history, signed image URLs.
@@ -32,6 +33,22 @@ Intelligence backend packages**:
   recommendations T6 (cold-start below 10 feedback datapoints → recency +
   completeness; blended thereafter with self-scoped weights), self-scoped
   weights T7–T8, scoped feedback T9, self-scoped watchlists T10–T13.
+- **P3 — Integration** — `crates/backend/src/jobs/` starts five tokio
+  background loops from `app::run` at server boot: the 30-second alert
+  evaluator, the 10-second report scheduler, an hourly retention sweep
+  (env_raw, kpi, feedback), an hourly metric rollup (materialises
+  `kpi_rollup_daily` from the last 36 hours of `metric_computations`),
+  and the 30-second notification retry worker. Each loop logs-and-
+  continues on failure so one bad cycle never kills the process.
+- **P4 — Hardening** — real HTTP integration coverage for endpoint
+  allowlist enforcement, signed-image-URL negative paths (missing params
+  / forged signature / expired exp / valid sig with unknown row), error
+  envelope + `email_ciphertext` redaction, notification subscription
+  opt-out, retention sweep fan-out, metric-rollup idempotency,
+  notification retry advancement, plus the existing alert-evaluator →
+  notification-center and report-scheduler → artifact-plus-notification
+  pipelines. See `crates/backend/tests/integration_tests.rs` (14
+  passing).
 
 The endpoint-parity audit (`scripts/audit_endpoints.sh`) runs in strict
 mode and reports **forward parity 114/114 (100 %)** with 0 reverse orphans.
@@ -110,7 +127,8 @@ Run the broad test gate from the repo root:
   via the `tests` Docker image, executed against a real Postgres. The
   no-mock integration suites (`http_p1.rs` = 52 tests, `parity_tests.rs`
   = 52 P-A/P-B endpoint tests, `talent_{search,recommend,weights,
-  watchlist,feedback}_tests.rs` = 39 tests, 143 total) run serialized
+  watchlist,feedback}_tests.rs` = 39 tests, `integration_tests.rs` = 14
+  P3/P4 cross-domain + hardening tests, 157 total) run serialized
   (`--test-threads=1`) because they reuse one DB. The coverage-threshold
   wrapper (`cargo llvm-cov --fail-under-lines 90 …`) is layered on in
   the same commit that lands the first coverage-gated feature work.
@@ -130,12 +148,19 @@ Run the broad test gate from the repo root:
   (committed at the end-of-development gate) → `strict` mode (both
   checks enforced). The marker is now present and the audit reports
   `114/77` (100 %) forward parity with 0 reverse orphans — green.
-- **Flow gate** — Playwright specs under `e2e/` stay honestly DEFERRED
-  until the first real spec lands. The script prints a clearly
-  labelled `[deferred]` line; it does not silently swallow a broken
-  toolchain invocation. Pinned Chromium and Playwright browsers are
-  activated in `Dockerfile.tests` in the same commit that lands the
-  first real flow spec.
+- **Flow gate** — seven Playwright specs live in `e2e/specs/`
+  (`login`, `admin_ops`, `products_import`, `analyst_metric_report`,
+  `alert_to_notification`, `talent_recommendations`, `offline_states`).
+  The flow gate is opt-in via `TERRAOPS_RUN_FLOW=1`; when set,
+  `run_tests.sh` brings up the `app` service, waits for
+  `/api/v1/health`, runs `npm ci + npx playwright install chromium +
+  npx playwright test` inside the `tests` image, and fails the gate on
+  any spec failure. When the env var is unset the gate prints a
+  clearly labelled `[deferred]` line explaining the opt-in path so the
+  default fast path stays cheap on machines without pre-downloaded
+  browsers. `Dockerfile.tests` now bundles the Chromium runtime
+  libraries; the ~300 MB browser payload is downloaded on first opt-in
+  run rather than baked into the base image.
 
 `./run_tests.sh` invokes every gate against the same `tests` image
 produced by `Dockerfile.tests`. No host-side cargo, Node, or Rust
@@ -236,9 +261,9 @@ plan.md                     # repo-local execution checklist
 
 Current-scope disclosures (updated as features land):
 
-- **Backend P1 + P-A + P-B + P-C are complete and integrated.** 143
-  no-mock integration tests against real Postgres through the full
-  middleware stack:
+- **Backend P1 + P-A + P-B + P-C + P3 + P4 hardening are complete and
+  integrated.** 157 no-mock integration tests against real Postgres
+  through the full middleware stack:
     - `http_p1.rs` — 52 P1 tests (system S1–S2, auth A1–A5, users U1–U10,
       security SEC1–SEC9, retention R1–R3, monitoring M1–M4, reference-data
       REF1–REF9, notifications N1–N7).
@@ -248,6 +273,13 @@ Current-scope disclosures (updated as features land):
     - `talent_{search,recommend,weights,watchlist,feedback}_tests.rs` —
       39 P-C talent tests covering T1–T13 including cold-start →
       blended scoring transition at the 10-feedback threshold.
+    - `integration_tests.rs` — 14 P3/P4 cross-domain tests: retention
+      env_raw/kpi/feedback purges, audit-indefinite policy, ttl=0
+      retains, alert evaluator → notification, report scheduler →
+      artifact + notification, retention sweep job, metric rollup
+      idempotency, notification retry, notification opt-out,
+      allowlist live enforcement, signed URL forged/expired/unknown
+      negatives, error envelope + email ciphertext redaction.
   Run them with `docker compose run --rm tests bash -c 'cargo test
   -p terraops-backend -- --test-threads=1'`.
 - `scripts/seed_demo.sh` now invokes `terraops-backend seed`, which is

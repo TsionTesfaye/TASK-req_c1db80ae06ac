@@ -51,4 +51,17 @@ RUN apt-get update \
 RUN rustup target add wasm32-unknown-unknown \
  && cargo install --locked wasm-bindgen-cli --version 0.2.118
 
+# Playwright runtime (opt-in flow gate). The browsers themselves (pinned
+# Chromium) are provisioned on first use by `npx playwright install
+# chromium` invoked from `run_tests.sh` when `TERRAOPS_RUN_FLOW=1`. We
+# install the npm tool itself here so the image has a consistent
+# Playwright version pinned via `e2e/package.json`; the ~300MB browser
+# payload stays out of the base image and is downloaded on demand.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+      libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace
