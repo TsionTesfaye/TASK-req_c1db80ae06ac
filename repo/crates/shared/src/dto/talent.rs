@@ -99,7 +99,7 @@ pub struct TalentWeights {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpdateWeightsRequest {
     pub skills_weight: i32,
     pub experience_weight: i32,

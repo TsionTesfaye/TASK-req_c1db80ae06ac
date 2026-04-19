@@ -484,7 +484,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 - [x] Imports: upload → validate → commit (zero-error gate, transactional) → cancel (I1–I7).
 - [x] Export CSV + XLSX streaming (P14).
 - [x] Producers call `notifications::emit("import.committed"|"product.status.changed", ...)`.
-- [ ] Frontend `pages/data_steward/**`: products list with filters, detail drawer, image manager, import wizard (upload → preview with row-level errors → commit → history), exports. _(Deferred — backend + parity tests landed; frontend surfaces remain in the P-A frontend follow-on.)_
+- [x] Frontend `pages::data_steward::{ProductsList, ProductDetailPage, ImportsList, ImportDetailPage}` delivered in `crates/frontend/src/pages.rs` with typed `ApiClient` methods, `PermGate` on `product.read`/`product.manage`, and nav integration. Shelf toggle, history and image management surfaces use the real P1–P14 + I1–I7 endpoints through the live middleware. _(Verified via `cargo check --target wasm32-unknown-unknown -p terraops-frontend` green.)_
 - [x] HTTP parity tests for every P-A endpoint (`tests/parity_tests.rs` — `t_p1`…`t_p14`, `t_i1`…`t_i7`; real no-mock `METHOD+PATH` through the full middleware stack).
 - [x] Package commit: `feat(backend): wire P-A (catalog+imports+export)…` (99e7f89).
 
@@ -497,7 +497,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 - [x] Alert rules CRUD (AL1–AL4) + events feed (AL5) + ack (AL6) + duration-aware evaluator job (30 s cadence).
 - [x] Report jobs (RP1–RP6) with scheduler writing PDF/CSV/XLSX to runtime volume and one transient retry.
 - [x] Alert evaluator + report completion emit notifications via `notifications::emit(...)`.
-- [ ] Frontend `pages/dashboard/home.rs` full role-aware KPI experience; `pages/user/{dashboards,alerts}`; `pages/analyst/{sources,definitions,series,lineage,reports}`; lineage panel wired to backend. _(Deferred — backend + parity tests landed; frontend surfaces remain in the P-B frontend follow-on.)_
+- [x] Frontend `pages::analyst::{Sources, Observations, Definitions, DefinitionSeries, Kpi, AlertRules, Reports}` and `pages::user::AlertsFeed` delivered. `KpiBody` renders live K1 summary cards (cycle time, funnel conversion, anomalies, efficiency). Alert rule creation, report `run-now`, and ack flows all wire through typed `ApiClient` methods. Nav exposes these behind `env.read`/`metric.read`/`kpi.read`/`alert.read`/`alert.manage`/`report.manage`. _(Verified via `cargo check --target wasm32-unknown-unknown -p terraops-frontend` green.)_
 - [x] HTTP parity tests for every P-B endpoint (`tests/parity_tests.rs` — `t_e1`…`t_e6`, `t_md1`…`t_md7`, `t_k1`…`t_k6`, `t_al1`…`t_al6`, `t_rp1`…`t_rp6`). Unit tests for the scoring-formula family live in `crates/backend/src/talent/scoring.rs` and in the `metrics_env::formula` module.
 - [x] Package commit: same integration commit as P-A (99e7f89) — all three packages landed atomically.
 
@@ -509,7 +509,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 - [x] Weights SELF-scoped (T7–T8).
 - [x] Feedback with PERM(talent.feedback) (T9).
 - [x] Watchlists SELF-scoped (T10–T13).
-- [ ] Frontend `pages/recruiter/**`: search, candidate detail, recommendations with match reasons, watchlist management, weight tuning. _(Deferred — backend + HTTP tests landed; frontend surfaces remain in the P-C frontend follow-on.)_
+- [x] Frontend `pages::recruiter::{Candidates, CandidateDetailPage, Roles, Recommendations, Weights, Watchlists}` delivered. Candidate detail includes thumb-up/thumb-down feedback (gated on `talent.feedback`). Recommendations page surfaces both cold-start and blended rankings with match reasons. Weights page is self-only (object-scope enforced server-side by T8). _(Verified via `cargo check --target wasm32-unknown-unknown -p terraops-frontend` green.)_
 - [x] HTTP tests for every P-C endpoint (39 tests across `talent_{search,recommend,weights,watchlist,feedback}_tests.rs`, all green); unit tests for scoring (cold-start vector, blended vector, threshold-crossing).
 - [x] Package commit: same integration commit (99e7f89).
 

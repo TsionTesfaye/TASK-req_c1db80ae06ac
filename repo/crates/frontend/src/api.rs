@@ -17,14 +17,29 @@ use gloo_net::http::{Method, Request, RequestBuilder, Response};
 use gloo_timers::future::TimeoutFuture;
 use serde::{de::DeserializeOwned, Serialize};
 use terraops_shared::dto::{
+    alert::{AckAlertEventResponse, AlertEventDto, AlertRuleDto, CreateAlertRuleRequest,
+        UpdateAlertRuleRequest},
     audit::AuditEntry,
     auth::{AuthUserDto, ChangePasswordRequest, LoginRequest, LoginResponse, RefreshResponse},
+    env_source::{BulkObservationsRequest, BulkObservationsResponse, CreateEnvSourceRequest,
+        EnvSourceDto, ObservationDto, UpdateEnvSourceRequest},
+    import::{ImportBatchSummary, ImportRowDto},
+    kpi::{AnomalyRow, CycleTimeRow, DrillRow, EfficiencyRow, FunnelResponse, KpiSummary},
+    metric::{ComputationLineage, CreateMetricDefinitionRequest, MetricDefinitionDto,
+        MetricSeriesResponse, UpdateMetricDefinitionRequest},
     monitoring::{CrashReport, ErrorBucket, IngestCrashReport, LatencyBucket},
     notification::{MailboxExportSummary, NotificationItem, NotificationSubscription,
         UpsertSubscriptionsRequest},
+    product::{CreateProductRequest, CreateTaxRateRequest, ProductDetail, ProductHistoryEntry,
+        ProductListItem, SetOnShelfRequest, UpdateProductRequest, UpdateTaxRateRequest},
     ref_data::{BrandRef, CategoryRef, DepartmentRef, SiteRef, StateRef, UnitRef},
+    report::{CreateReportJobRequest, ReportJobDto, ReportRunResponse},
     retention::{RetentionPolicy, RetentionRunResult, UpdateRetentionPolicy},
     security::{AllowlistEntry, CreateAllowlistEntry, DeviceCert, MtlsConfig, UpdateMtlsConfig},
+    talent::{AddWatchlistItemRequest, CandidateDetail, CandidateListItem, CreateFeedbackRequest,
+        CreateRoleRequest, CreateWatchlistRequest, FeedbackRecord, RecommendationResult,
+        RoleOpenItem, TalentWeights, UpdateWeightsRequest, UpsertCandidateRequest,
+        WatchlistEntry, WatchlistItem},
     user::{AssignRolesRequest, CreateUserRequest, RoleDto, UpdateUserRequest, UserDetail,
         UserListItem},
 };
@@ -438,6 +453,222 @@ impl ApiClient {
     }
     pub async fn list_mailbox_exports(&self) -> Result<Vec<MailboxExportSummary>, ApiError> {
         self.get_with_retry("/notifications/mailbox-exports").await
+    }
+
+    // ---- P-A Catalog: Products (P1–P14) -------------------------------------
+
+    pub async fn list_products(&self) -> Result<Vec<ProductListItem>, ApiError> {
+        self.get_with_retry("/products").await
+    }
+    pub async fn get_product(&self, id: Uuid) -> Result<ProductDetail, ApiError> {
+        self.get_with_retry(&format!("/products/{id}")).await
+    }
+    pub async fn create_product(&self, req: &CreateProductRequest) -> Result<ProductDetail, ApiError> {
+        self.mutate(Method::POST, "/products", Some(req)).await
+    }
+    pub async fn update_product(&self, id: Uuid, req: &UpdateProductRequest) -> Result<ProductDetail, ApiError> {
+        self.mutate(Method::PATCH, &format!("/products/{id}"), Some(req)).await
+    }
+    pub async fn delete_product(&self, id: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::DELETE, &format!("/products/{id}"), None).await
+    }
+    pub async fn set_product_status(&self, id: Uuid, req: &SetOnShelfRequest) -> Result<ProductDetail, ApiError> {
+        self.mutate(Method::POST, &format!("/products/{id}/status"), Some(req)).await
+    }
+    pub async fn product_history(&self, id: Uuid) -> Result<Vec<ProductHistoryEntry>, ApiError> {
+        self.get_with_retry(&format!("/products/{id}/history")).await
+    }
+    pub async fn add_tax_rate(&self, id: Uuid, req: &CreateTaxRateRequest) -> Result<serde_json::Value, ApiError> {
+        self.mutate(Method::POST, &format!("/products/{id}/tax-rates"), Some(req)).await
+    }
+    pub async fn update_tax_rate(&self, id: Uuid, rid: Uuid, req: &UpdateTaxRateRequest) -> Result<serde_json::Value, ApiError> {
+        self.mutate(Method::PATCH, &format!("/products/{id}/tax-rates/{rid}"), Some(req)).await
+    }
+    pub async fn delete_tax_rate(&self, id: Uuid, rid: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::DELETE, &format!("/products/{id}/tax-rates/{rid}"), None).await
+    }
+    pub async fn delete_product_image(&self, id: Uuid, imgid: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::DELETE, &format!("/products/{id}/images/{imgid}"), None).await
+    }
+    pub async fn export_products(&self, body: &serde_json::Value) -> Result<serde_json::Value, ApiError> {
+        self.mutate(Method::POST, "/products/export", Some(body)).await
+    }
+
+    // ---- P-A Imports (I1–I7) ------------------------------------------------
+
+    pub async fn list_imports(&self) -> Result<Vec<ImportBatchSummary>, ApiError> {
+        self.get_with_retry("/imports").await
+    }
+    pub async fn get_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+        self.get_with_retry(&format!("/imports/{id}")).await
+    }
+    pub async fn list_import_rows(&self, id: Uuid) -> Result<Vec<ImportRowDto>, ApiError> {
+        self.get_with_retry(&format!("/imports/{id}/rows")).await
+    }
+    pub async fn validate_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+        self.mutate::<(), _>(Method::POST, &format!("/imports/{id}/validate"), None).await
+    }
+    pub async fn commit_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+        self.mutate::<(), _>(Method::POST, &format!("/imports/{id}/commit"), None).await
+    }
+    pub async fn cancel_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+        self.mutate::<(), _>(Method::POST, &format!("/imports/{id}/cancel"), None).await
+    }
+
+    // ---- P-B Env sources + observations (E1–E6) -----------------------------
+
+    pub async fn list_env_sources(&self) -> Result<Vec<EnvSourceDto>, ApiError> {
+        self.get_with_retry("/env/sources").await
+    }
+    pub async fn create_env_source(&self, req: &CreateEnvSourceRequest) -> Result<EnvSourceDto, ApiError> {
+        self.mutate(Method::POST, "/env/sources", Some(req)).await
+    }
+    pub async fn update_env_source(&self, id: Uuid, req: &UpdateEnvSourceRequest) -> Result<EnvSourceDto, ApiError> {
+        self.mutate(Method::PATCH, &format!("/env/sources/{id}"), Some(req)).await
+    }
+    pub async fn delete_env_source(&self, id: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::DELETE, &format!("/env/sources/{id}"), None).await
+    }
+    pub async fn bulk_observations(&self, id: Uuid, req: &BulkObservationsRequest) -> Result<BulkObservationsResponse, ApiError> {
+        self.mutate(Method::POST, &format!("/env/sources/{id}/observations"), Some(req)).await
+    }
+    pub async fn list_observations(&self, query: &str) -> Result<Vec<ObservationDto>, ApiError> {
+        let path = if query.is_empty() { "/env/observations".to_string() }
+                   else { format!("/env/observations?{query}") };
+        self.get_with_retry(&path).await
+    }
+
+    // ---- P-B Metric definitions + series + lineage (MD1–MD7) ----------------
+
+    pub async fn list_metric_definitions(&self) -> Result<Vec<MetricDefinitionDto>, ApiError> {
+        self.get_with_retry("/metrics/definitions").await
+    }
+    pub async fn get_metric_definition(&self, id: Uuid) -> Result<MetricDefinitionDto, ApiError> {
+        self.get_with_retry(&format!("/metrics/definitions/{id}")).await
+    }
+    pub async fn create_metric_definition(&self, req: &CreateMetricDefinitionRequest) -> Result<MetricDefinitionDto, ApiError> {
+        self.mutate(Method::POST, "/metrics/definitions", Some(req)).await
+    }
+    pub async fn update_metric_definition(&self, id: Uuid, req: &UpdateMetricDefinitionRequest) -> Result<MetricDefinitionDto, ApiError> {
+        self.mutate(Method::PATCH, &format!("/metrics/definitions/{id}"), Some(req)).await
+    }
+    pub async fn delete_metric_definition(&self, id: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::DELETE, &format!("/metrics/definitions/{id}"), None).await
+    }
+    pub async fn metric_series(&self, id: Uuid) -> Result<MetricSeriesResponse, ApiError> {
+        self.get_with_retry(&format!("/metrics/definitions/{id}/series")).await
+    }
+    pub async fn metric_lineage(&self, computation_id: Uuid) -> Result<ComputationLineage, ApiError> {
+        self.get_with_retry(&format!("/metrics/computations/{computation_id}/lineage")).await
+    }
+
+    // ---- P-B KPI (K1–K6) ----------------------------------------------------
+
+    pub async fn kpi_summary(&self) -> Result<KpiSummary, ApiError> {
+        self.get_with_retry("/kpi/summary").await
+    }
+    pub async fn kpi_cycle_time(&self) -> Result<Vec<CycleTimeRow>, ApiError> {
+        self.get_with_retry("/kpi/cycle-time").await
+    }
+    pub async fn kpi_funnel(&self) -> Result<FunnelResponse, ApiError> {
+        self.get_with_retry("/kpi/funnel").await
+    }
+    pub async fn kpi_anomalies(&self) -> Result<Vec<AnomalyRow>, ApiError> {
+        self.get_with_retry("/kpi/anomalies").await
+    }
+    pub async fn kpi_efficiency(&self) -> Result<Vec<EfficiencyRow>, ApiError> {
+        self.get_with_retry("/kpi/efficiency").await
+    }
+    pub async fn kpi_drill(&self) -> Result<Vec<DrillRow>, ApiError> {
+        self.get_with_retry("/kpi/drill").await
+    }
+
+    // ---- P-B Alerts (AL1–AL6) -----------------------------------------------
+
+    pub async fn list_alert_rules(&self) -> Result<Vec<AlertRuleDto>, ApiError> {
+        self.get_with_retry("/alerts/rules").await
+    }
+    pub async fn create_alert_rule(&self, req: &CreateAlertRuleRequest) -> Result<AlertRuleDto, ApiError> {
+        self.mutate(Method::POST, "/alerts/rules", Some(req)).await
+    }
+    pub async fn update_alert_rule(&self, id: Uuid, req: &UpdateAlertRuleRequest) -> Result<AlertRuleDto, ApiError> {
+        self.mutate(Method::PATCH, &format!("/alerts/rules/{id}"), Some(req)).await
+    }
+    pub async fn delete_alert_rule(&self, id: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::DELETE, &format!("/alerts/rules/{id}"), None).await
+    }
+    pub async fn list_alert_events(&self) -> Result<Vec<AlertEventDto>, ApiError> {
+        self.get_with_retry("/alerts/events").await
+    }
+    pub async fn ack_alert_event(&self, id: Uuid) -> Result<AckAlertEventResponse, ApiError> {
+        self.mutate::<(), _>(Method::POST, &format!("/alerts/events/{id}/ack"), None).await
+    }
+
+    // ---- P-B Reports (RP1–RP6) ----------------------------------------------
+
+    pub async fn list_report_jobs(&self) -> Result<Vec<ReportJobDto>, ApiError> {
+        self.get_with_retry("/reports/jobs").await
+    }
+    pub async fn get_report_job(&self, id: Uuid) -> Result<ReportJobDto, ApiError> {
+        self.get_with_retry(&format!("/reports/jobs/{id}")).await
+    }
+    pub async fn create_report_job(&self, req: &CreateReportJobRequest) -> Result<ReportJobDto, ApiError> {
+        self.mutate(Method::POST, "/reports/jobs", Some(req)).await
+    }
+    pub async fn run_report_now(&self, id: Uuid) -> Result<ReportRunResponse, ApiError> {
+        self.mutate::<(), _>(Method::POST, &format!("/reports/jobs/{id}/run-now"), None).await
+    }
+    pub async fn cancel_report_job(&self, id: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(Method::POST, &format!("/reports/jobs/{id}/cancel"), None).await
+    }
+
+    // ---- P-C Talent Intelligence (T1–T13) -----------------------------------
+
+    pub async fn list_candidates(&self) -> Result<Vec<CandidateListItem>, ApiError> {
+        self.get_with_retry("/talent/candidates").await
+    }
+    pub async fn get_candidate(&self, id: Uuid) -> Result<CandidateDetail, ApiError> {
+        self.get_with_retry(&format!("/talent/candidates/{id}")).await
+    }
+    pub async fn create_candidate(&self, req: &UpsertCandidateRequest) -> Result<CandidateDetail, ApiError> {
+        self.mutate(Method::POST, "/talent/candidates", Some(req)).await
+    }
+    pub async fn list_talent_roles(&self) -> Result<Vec<RoleOpenItem>, ApiError> {
+        self.get_with_retry("/talent/roles").await
+    }
+    pub async fn create_talent_role(&self, req: &CreateRoleRequest) -> Result<RoleOpenItem, ApiError> {
+        self.mutate(Method::POST, "/talent/roles", Some(req)).await
+    }
+    pub async fn get_recommendations(&self, role_id: Uuid) -> Result<RecommendationResult, ApiError> {
+        self.get_with_retry(&format!("/talent/recommendations?role_id={role_id}")).await
+    }
+    pub async fn get_talent_weights(&self) -> Result<TalentWeights, ApiError> {
+        self.get_with_retry("/talent/weights").await
+    }
+    pub async fn put_talent_weights(&self, req: &UpdateWeightsRequest) -> Result<TalentWeights, ApiError> {
+        self.mutate(Method::PUT, "/talent/weights", Some(req)).await
+    }
+    pub async fn post_talent_feedback(&self, req: &CreateFeedbackRequest) -> Result<FeedbackRecord, ApiError> {
+        self.mutate(Method::POST, "/talent/feedback", Some(req)).await
+    }
+    pub async fn list_watchlists(&self) -> Result<Vec<WatchlistItem>, ApiError> {
+        self.get_with_retry("/talent/watchlists").await
+    }
+    pub async fn create_watchlist(&self, req: &CreateWatchlistRequest) -> Result<WatchlistItem, ApiError> {
+        self.mutate(Method::POST, "/talent/watchlists", Some(req)).await
+    }
+    pub async fn list_watchlist_items(&self, id: Uuid) -> Result<Vec<WatchlistEntry>, ApiError> {
+        self.get_with_retry(&format!("/talent/watchlists/{id}/items")).await
+    }
+    pub async fn add_watchlist_item(&self, id: Uuid, req: &AddWatchlistItemRequest) -> Result<(), ApiError> {
+        self.mutate_no_body(Method::POST, &format!("/talent/watchlists/{id}/items"), Some(req)).await
+    }
+    pub async fn remove_watchlist_item(&self, id: Uuid, candidate_id: Uuid) -> Result<(), ApiError> {
+        self.mutate_no_body::<()>(
+            Method::DELETE,
+            &format!("/talent/watchlists/{id}/items/{candidate_id}"),
+            None,
+        ).await
     }
 }
 
