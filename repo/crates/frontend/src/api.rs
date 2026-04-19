@@ -469,7 +469,12 @@ pub async fn select_timeout<F: std::future::Future>(
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
-    wasm_bindgen_test_configure!(run_in_browser);
+    // Tests are browser-agnostic primitives (timeout race, error mapping,
+    // token attachment) and do not hit the DOM or `fetch`. With no
+    // `wasm_bindgen_test_configure!(run_in_browser)` directive,
+    // wasm-bindgen-test-runner executes them under Node.js by default,
+    // which keeps Gate 2 toolchain-light (Node only; no pinned Chromium
+    // needed).
 
     #[wasm_bindgen_test]
     async fn timeout_fires_for_slow_future() {

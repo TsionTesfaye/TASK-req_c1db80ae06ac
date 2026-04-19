@@ -726,7 +726,7 @@ pub mod admin {
     #[function_component(RetentionBody)]
     fn retention_body() -> Html {
         let auth = use_context::<AuthContext>().expect("AuthContext");
-        let toast = use_context::<ToastContext>().expect("ToastContext");
+        let _toast = use_context::<ToastContext>().expect("ToastContext");
         let policies = use_state(|| LoadState::<Vec<RetentionPolicy>>::Loading);
 
         let reload = {

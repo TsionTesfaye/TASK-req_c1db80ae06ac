@@ -1,22 +1,24 @@
 # syntax=docker/dockerfile:1.7
 #
-# TerraOps test runner image — SCAFFOLD (P0) variant.
+# TerraOps test runner image.
 #
-# At scaffold we keep this image minimal and honest: it gives `run_tests.sh`
-# a container with `cargo` + `bash` + `jq` available, which is enough for
-# the broad-gate wiring to be truthful at scaffold (only Gate 3 runs
-# actively at scaffold). Heavy P1+ tooling (`cargo-llvm-cov`, `grcov`,
-# `wasm-bindgen-test` runner, Node, pinned Chromium, Playwright browsers)
-# is deferred to the first phase that actually needs it.
+# Scope (P1 truthful):
+#   * Gate 1 — `cargo test -p terraops-backend -p terraops-shared`
+#     (real no-mock HTTP suite against real Postgres).
+#   * Gate 2 — `cargo test --target wasm32-unknown-unknown -p terraops-frontend`
+#     via `wasm-bindgen-test-runner` in Node mode. This image therefore
+#     includes the `wasm32-unknown-unknown` target, `wasm-bindgen-cli`
+#     (matched to the crate's `wasm-bindgen` version), and a system
+#     Node.js runtime.
+#   * Gate 3 — `scripts/audit_endpoints.sh` (pure bash + awk).
 #
-# Why this is safe under the accepted scaffold contract:
-#   * `./run_tests.sh` does not yet execute Gate 1/Gate 2/Flow gate at
-#     scaffold (no Rust tests and no WASM tests exist yet in the repo).
-#   * When P1 adds the first Rust test, Gate 1 is wired up here AND in
-#     `run_tests.sh` in the same commit. The test runner image grows
-#     together with the test surface, not ahead of it.
-#   * No `cargo install` happens at scaffold, which was the primary source
-#     of the owner-reported network-timeout failures during scaffold build.
+# Explicitly deferred (honestly, not silently):
+#   * grcov + the 80% line-coverage threshold ride in alongside the
+#     first full frontend coverage run; current Gate 2 proves the tests
+#     actually execute end-to-end, which is the P1 contract.
+#   * Playwright flow gate. Pinned Chromium and Playwright browsers are
+#     activated when the first real spec lands in a later phase; see
+#     `run_tests.sh` for the clearly-labelled DEFERRED line.
 
 FROM rust:1.88-bookworm
 
@@ -24,11 +26,29 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_TERM_COLOR=never \
     CARGO_NET_RETRY=10 \
     CARGO_HTTP_MULTIPLEXING=false \
-    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+    SQLX_OFFLINE=true \
+    NODE_MAJOR=20
 
+# System packages + Node.js LTS (for the wasm-bindgen-test-runner).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash git curl ca-certificates jq \
+      bash git curl ca-certificates jq gnupg xz-utils pkg-config libssl-dev \
+ && mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+      | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+ && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+      > /etc/apt/sources.list.d/nodesource.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
+
+# wasm toolchain for Gate 2. `wasm-bindgen-cli` must match the
+# `wasm-bindgen` version resolved in Cargo.lock exactly (the schema is
+# not backward compatible between minor versions). 0.2.118 is the
+# current transitive resolution via yew/gloo-net; bump in lockstep with
+# `cargo update -p wasm-bindgen`.
+RUN rustup target add wasm32-unknown-unknown \
+ && cargo install --locked wasm-bindgen-cli --version 0.2.118
 
 WORKDIR /workspace

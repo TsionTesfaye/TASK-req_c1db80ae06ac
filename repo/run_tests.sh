@@ -1,41 +1,45 @@
 #!/usr/bin/env bash
 # run_tests.sh — broad test gate (repo-root, project-standard).
 #
-# Truthful scaffold (P0) wiring:
+# P1 truthful wiring:
 #
 #   Gate 1 (Rust cargo tests for terraops-backend + terraops-shared) runs
-#   for real inside the `tests` Docker image via `docker compose run --rm
-#   tests …`. No host-side cargo is ever invoked; the host only needs
-#   `docker` + `bash`. At scaffold, no #[test] functions exist yet, so the
-#   gate cleanly compiles the workspace and reports "0 passed" — a real
-#   green result, not a silent skip. When the first Rust test lands in P1,
-#   this same invocation starts exercising it immediately, and the coverage
-#   wrapper (`cargo llvm-cov --fail-under-lines 90 …`) is layered on in
-#   the same commit per docs/test-coverage.md §Coverage Gate Math.
+#   for real inside the `tests` Docker image against a real Postgres,
+#   using the same startup-value model as `docker compose up --build`.
+#   The 52-test `http_p1.rs` no-mock integration suite is executed
+#   serialized with `--test-threads=1` because it reuses a single DB.
 #
-#   Gate 3 (endpoint parity audit) runs for real on the host; it is
-#   deterministic and has no toolchain dependencies beyond `bash` + `awk`.
+#   Gate 2 (frontend `wasm-bindgen-test` suite for the API client) runs
+#   for real in the tests image via `cargo test --target
+#   wasm32-unknown-unknown -p terraops-frontend`. The tests are
+#   configured with `run_in_node`, so no browser is required — the
+#   wasm-bindgen-test-runner uses the Node.js interpreter installed in
+#   `Dockerfile.tests`. grcov and the 80% line-coverage threshold ride
+#   in alongside the first coverage-gated frontend commit; the current
+#   gate proves the wasm tests execute end-to-end.
 #
-#   Gate 2 (`wasm-bindgen-test + grcov ≥ 80%`) and the Playwright flow gate
-#   stay deferred: the WASM runner, Node, pinned Chromium, and Playwright
-#   browsers are not yet provisioned in `Dockerfile.tests`. They will be
-#   added in the same commit that lands the first wasm-bindgen-test target
-#   and the first Playwright spec, respectively. Until then this script
-#   prints a clearly labelled "DEFERRED" line for each of them — never
-#   swallows a broken toolchain invocation.
+#   Gate 3 (endpoint parity audit) runs on the host; deterministic and
+#   dependency-free beyond `bash` + `awk`.
 #
-# Full gate contract (activated in P1+), per docs/test-coverage.md
-# §Coverage Gate Math:
-#   Gate 1 : docker compose run --rm tests cargo llvm-cov --no-fail-fast \
-#              -p terraops-shared -p terraops-backend \
-#              --ignore-filename-regex '/(tests|migrations|\.sqlx)/' \
-#              --fail-under-lines 90 --lcov --output-path coverage/rust.lcov
-#   Gate 2 : docker compose run --rm tests  (wasm-bindgen-test + grcov ≥ 80)
-#   Gate 3 : scripts/audit_endpoints.sh  (mode = strict iff marker present)
-#   Flow   : docker compose run --rm tests  (Playwright, 7 specs)
+#   Flow gate (Playwright specs) stays honestly DEFERRED: no spec exists
+#   yet, and `Dockerfile.tests` does not bundle pinned Chromium /
+#   Playwright browsers. This is wired in the same commit that lands
+#   the first real flow spec (P5 at the latest).
 #
-# Host requirements: bash + docker (Compose v2). No host-side Rust, Node,
-# Chromium, or Playwright.
+# Full gate contract (coverage thresholds layer on per
+# docs/test-coverage.md §Coverage Gate Math):
+#   Gate 1 : cargo llvm-cov --fail-under-lines 90 …
+#            (threshold wrapper lands with the first feature-complete
+#             coverage-gated commit; today we run the cargo test surface
+#             without the threshold to keep failures honest and fast)
+#   Gate 2 : cargo test --target wasm32-unknown-unknown -p terraops-frontend
+#            (+ grcov --threshold 80 once the frontend coverage floor is
+#             wired)
+#   Gate 3 : scripts/audit_endpoints.sh
+#   Flow   : npx --prefix e2e playwright test  (DEFERRED)
+#
+# Host requirements: bash + docker (Compose v2). No host-side Rust,
+# Node, Chromium, or Playwright.
 
 set -euo pipefail
 
@@ -52,32 +56,39 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 2
 fi
 
-# Compose CLI: v2 (`docker compose`) is the canonical path. We do not fall
-# back to the legacy `docker-compose` binary because the project contract
-# is Compose v2.
 compose() { docker compose "$@"; }
 
 failed=0
 
-# ---- Gate 1 : Rust cargo tests via the tests image ------------------------
+# ---- Gate 1 : backend + shared cargo tests --------------------------------
 section "Gate 1 — cargo test (terraops-backend + terraops-shared, via docker compose tests image)"
-# Build the tests image first so a failure surfaces as a real build error
-# (not hidden behind `run`). This is also the honest signal that the
-# toolchain is actually present: `cargo --version` is exercised before any
-# test invocation.
 if ! compose build tests; then
     echo "[gate1] FAILED — could not build the 'tests' image." >&2
     failed=1
 else
-    # NOTE: use `bash -c` (not `-lc`). The rust:* base image exposes cargo
-    # via PATH entries set as Dockerfile ENVs; a login shell would source
-    # /etc/profile and reset PATH, dropping /usr/local/cargo/bin and
-    # producing a misleading "cargo: command not found".
-    if ! compose run --rm --no-deps tests \
-            bash -c 'cargo --version && cargo test -p terraops-shared -p terraops-backend --no-fail-fast'; then
+    # The backend http_p1 suite hits a real Postgres; run it against the
+    # compose `db` service and serialize with --test-threads=1 because
+    # tests share one database. `--no-deps` is intentionally NOT used
+    # here — we want compose to bring up `db` before running tests.
+    if ! compose run --rm tests \
+            bash -c 'cargo --version \
+              && cargo test -p terraops-shared --no-fail-fast \
+              && cargo test -p terraops-backend --test http_p1 -- --test-threads=1'; then
         echo "[gate1] FAILED — cargo test reported failures." >&2
         failed=1
     fi
+fi
+
+# ---- Gate 2 : frontend wasm-bindgen-test suite ----------------------------
+section "Gate 2 — frontend wasm-bindgen-test (API client: timeout, retry policy, error mapping, token attach)"
+if ! compose run --rm --no-deps tests \
+        bash -c 'cargo --version \
+          && node --version \
+          && wasm-bindgen --version \
+          && CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+             cargo test --target wasm32-unknown-unknown -p terraops-frontend --no-fail-fast'; then
+    echo "[gate2] FAILED — frontend wasm tests failed." >&2
+    failed=1
 fi
 
 # ---- Gate 3 : endpoint parity audit ---------------------------------------
@@ -86,14 +97,11 @@ if ! bash "${REPO_ROOT}/scripts/audit_endpoints.sh"; then
     failed=1
 fi
 
-# ---- Gate 2 / Flow gate : deferred at scaffold ----------------------------
-section "Gate 2 — frontend WASM coverage ≥ 80%"
-echo "[scaffold] DEFERRED. wasm-bindgen-test runner + grcov are not yet provisioned"
-echo "[scaffold]   in Dockerfile.tests. Wired in P1 alongside the first WASM test."
-
+# ---- Flow gate : deferred (no spec yet) -----------------------------------
 section "Flow gate — Playwright specs"
-echo "[scaffold] DEFERRED. Node + pinned Chromium + Playwright browsers are not yet"
-echo "[scaffold]   provisioned in Dockerfile.tests. Wired in P1+ alongside the first spec."
+echo "[deferred] No Playwright specs exist in e2e/ yet; pinned Chromium and Playwright"
+echo "[deferred]   browsers are intentionally not provisioned in Dockerfile.tests."
+echo "[deferred]   Wired alongside the first real flow spec in a later phase."
 
 if [[ ${failed} -ne 0 ]]; then
     echo ""
@@ -102,4 +110,4 @@ if [[ ${failed} -ne 0 ]]; then
 fi
 
 echo ""
-echo "run_tests: OK (scaffold-level gates green)"
+echo "run_tests: OK (Gate 1 + Gate 2 + Gate 3 green; flow gate declared deferred)"

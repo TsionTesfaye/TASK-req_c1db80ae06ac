@@ -21,4 +21,4 @@ command = "sh"
 command_arguments = ["-c", "echo '[trunk] tailwind build hook placeholder — wired in P1'"]
 
 [tools]
-wasm_bindgen = "0.2.92"
+wasm_bindgen = "0.2.118"

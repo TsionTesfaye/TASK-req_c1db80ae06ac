@@ -54,7 +54,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && rustup target add wasm32-unknown-unknown \
  && cargo install --locked trunk --version 0.21.14 \
- && cargo install --locked wasm-bindgen-cli --version 0.2.92
+ && cargo install --locked wasm-bindgen-cli --version 0.2.118
 
 COPY Cargo.toml ./
 COPY crates/shared   ./crates/shared

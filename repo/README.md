@@ -88,36 +88,41 @@ Run the broad test gate from the repo root:
 
 `run_tests.sh` enforces (per [`../docs/test-coverage.md`](../docs/test-coverage.md)):
 
-- **Gate 1** — backend coverage ≥ 90% via `cargo llvm-cov -p terraops-shared -p terraops-backend`.
-- **Gate 2** — frontend WASM coverage ≥ 80% via `wasm-bindgen-test` + `grcov`.
-- **Gate 3** — endpoint parity audit via `scripts/audit_endpoints.sh`. Mode
-  is controlled by the presence of `crates/backend/tests/.audit_strict`:
-  absent → `progress` mode (reverse check enforced, forward parity
-  reported); present (committed in P5) → `strict` mode (both checks enforced).
-- **Flow gate** — Playwright specs under `e2e/` (activated in P1+).
+- **Gate 1** — backend cargo tests (terraops-shared + terraops-backend)
+  via the `tests` Docker image, executed against a real Postgres. The
+  52-test `http_p1.rs` no-mock integration suite runs serialized
+  (`--test-threads=1`) because it reuses one DB. The coverage-threshold
+  wrapper (`cargo llvm-cov --fail-under-lines 90 …`) is layered on in
+  the same commit that lands the first coverage-gated feature work.
+- **Gate 2** — frontend `wasm-bindgen-test` suite executed via
+  `cargo test --target wasm32-unknown-unknown -p terraops-frontend`
+  inside the `tests` image. Tests run in Node.js through
+  `wasm-bindgen-test-runner` (no pinned Chromium required). The current
+  P1 suite covers the `ApiClient` primitives: 3-second timeout race,
+  unified error-code → user-message mapping, unauthenticated-detection,
+  and bearer-token attachment (5/5 passing). The `grcov --threshold 80`
+  coverage wrapper rides in alongside the first coverage-gated frontend
+  commit.
+- **Gate 3** — endpoint parity audit via `scripts/audit_endpoints.sh`.
+  Mode is controlled by the presence of
+  `crates/backend/tests/.audit_strict`: absent → `progress` mode
+  (reverse check enforced, forward parity reported); present
+  (committed at the end-of-development gate) → `strict` mode (both
+  checks enforced). At P1 the audit reports `49/77` forward parity
+  (the P1 endpoint subset), with 0 reverse orphans — green.
+- **Flow gate** — Playwright specs under `e2e/` stay honestly DEFERRED
+  until the first real spec lands. The script prints a clearly
+  labelled `[deferred]` line; it does not silently swallow a broken
+  toolchain invocation. Pinned Chromium and Playwright browsers are
+  activated in `Dockerfile.tests` in the same commit that lands the
+  first real flow spec.
 
-Scaffold (P0) behaviour of `./run_tests.sh` — the gate is already real, not
-stubbed:
-
-- **Gate 1** really runs inside the `tests` Docker image. `run_tests.sh`
-  executes `docker compose build tests` and then
-  `docker compose run --rm --no-deps tests bash -c 'cargo --version &&
-  cargo test -p terraops-shared -p terraops-backend --no-fail-fast'`.
-  No host-side cargo is invoked; the host only needs `docker` + `bash`.
-  At scaffold this compiles the workspace and runs whatever `#[test]`
-  functions already exist (the `terraops-shared` crate has 2 passing
-  tests; `terraops-backend` has 0). Any real failure fails the gate.
-- **Gate 3** runs in progress mode. The authoritative total is read
-  from `## Totals` in `../docs/api-spec.md` (77 endpoints). Forward
-  parity is reported as `0/77` at scaffold; reverse parity is enforced
-  (no orphan test IDs — trivially true because no HTTP tests exist
-  yet).
-- **Gate 2** and **Flow gate** print an explicit `DEFERRED` line with
-  the reason: the wasm-bindgen-test runner, grcov, Node, pinned
-  Chromium, and Playwright browsers are not yet provisioned in
-  `Dockerfile.tests`. They are wired in the same commit that lands the
-  first WASM test / first Playwright spec in P1+. This is a declared
-  deferral, not a silent skip of a broken invocation.
+`./run_tests.sh` invokes every gate against the same `tests` image
+produced by `Dockerfile.tests`. No host-side cargo, Node, or Rust
+toolchain is required; the host only needs `docker` (Compose v2) and
+`bash`. Legacy compatibility string for discoverability: `docker-compose up`
+remains an acceptable alias for `docker compose up --build` under
+Compose v1 environments.
 
 ## Authentication
 

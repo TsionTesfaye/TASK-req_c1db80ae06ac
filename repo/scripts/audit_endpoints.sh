@@ -18,7 +18,10 @@
 #
 # Parser contract (per docs/test-coverage.md §Endpoint Audit Rules):
 #   - ID regex  : ^[A-Z]{1,5}[0-9]+$
-#   - fn  regex : \bfn[[:space:]]+t_([A-Z]{1,5}[0-9]+)_[A-Za-z0-9_]*[[:space:]]*\(
+#   - fn  regex : \bfn[[:space:]]+t_([A-Za-z]{1,5}[0-9]+)_[A-Za-z0-9_]*[[:space:]]*\(
+#                 (test fn names use lowercase prefixes — e.g. `t_sec3_…`
+#                 for SEC3 — so the captured ID is uppercased before the
+#                 inventory comparison)
 #
 # Exit codes:
 #   0 — pass (progress: reverse green; strict: reverse + forward green)
@@ -29,7 +32,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
 SPEC_FILE="${SPEC_FILE:-${REPO_ROOT}/../docs/api-spec.md}"
-TESTS_DIR="${REPO_ROOT}/crates/backend/tests/http"
+# Scan the full backend tests tree. P1 collapses every HTTP test into
+# `tests/http_p1.rs`; P-A/P-B/P-C will split tests back out into files
+# under `tests/http/**`. Both layouts are valid inputs to this parity
+# check — the audit does not care which file a `t_<id>_*` function lives
+# in, only that every ID it references maps to the authoritative
+# inventory and (in strict mode) that every authoritative ID has at
+# least one test.
+TESTS_DIR="${REPO_ROOT}/crates/backend/tests"
 MARKER="${REPO_ROOT}/crates/backend/tests/.audit_strict"
 OUT_DIR="${REPO_ROOT}/coverage"
 OUT_JSON="${OUT_DIR}/endpoint_audit.json"
@@ -82,9 +92,11 @@ inventory_ids=$(awk '
 # ---- Covered IDs from tests/http ----
 covered_ids=""
 if [[ -d "${TESTS_DIR}" ]]; then
-    covered_ids=$(grep -RhoE '\bfn[[:space:]]+t_[A-Z]{1,5}[0-9]+_[A-Za-z0-9_]*[[:space:]]*\(' \
+    covered_ids=$(grep -RhoE '\bfn[[:space:]]+t_[A-Za-z]{1,5}[0-9]+_[A-Za-z0-9_]*[[:space:]]*\(' \
+                    --include='*.rs' \
                     "${TESTS_DIR}" 2>/dev/null \
-                  | sed -E 's/.*fn[[:space:]]+t_([A-Z]{1,5}[0-9]+)_.*/\1/' \
+                  | sed -E 's/.*fn[[:space:]]+t_([A-Za-z]{1,5})([0-9]+)_.*/\1\2/' \
+                  | tr '[:lower:]' '[:upper:]' \
                   | sort -u || true)
 fi
 covered_count=$(printf '%s\n' "${covered_ids}" | grep -c . || true)
