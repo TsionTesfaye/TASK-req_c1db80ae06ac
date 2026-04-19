@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# TerraOps single-app image — SCAFFOLD (P0) variant.
+# TerraOps single-app image.
 #
 # Contract kept stable across phases:
 #   * final runtime image has the backend binary at /usr/local/bin/terraops-backend
@@ -8,22 +8,10 @@
 #   * entrypoint runs scripts/dev_bootstrap.sh then `terraops-backend serve`
 #   * bind :8443 with Rustls
 #
-# Scaffold defers what it does not yet need (safely, per the owner’s Turn
-# 0007 directive):
-#   * NO `trunk build` stage: we copy `crates/frontend/dist-scaffold/` into
-#     `/app/dist`. The Yew SPA source stays in `crates/frontend/` and its
-#     real Trunk build is activated in P1 alongside the first WASM tests.
-#   * NO `cargo install` of heavy side-tools (trunk, wasm-bindgen-cli):
-#     those are P1+ concerns and will live in `Dockerfile.tests` once first
-#     used.
-#
-# The only build-time network traffic is therefore:
-#   * apt for the base OS packages
-#   * cargo registry fetches for the backend crate's direct/transitive deps
-#   * (no rustup toolchain downloads — the `rust:1.88-*` base bundles them)
-#
-# Cargo retry envs (`CARGO_NET_RETRY=10`, sparse registry) make cargo
-# fetches resilient under flaky networks.
+# P1 completion: the real Yew SPA is built with Trunk + wasm-bindgen-cli in
+# the `frontend-build` stage below and its output is copied into `/app/dist/`
+# of the runtime image. The P0 scaffold shell (`crates/frontend/dist-scaffold`)
+# is no longer used by the runtime image.
 
 # ---- Stage 1: backend binary ----------------------------------------------
 FROM rust:1.88-bookworm AS backend-build
@@ -47,8 +35,34 @@ COPY crates/backend  ./crates/backend
 COPY crates/frontend ./crates/frontend
 
 # Build only the backend crate. `cargo -p terraops-backend` does not compile
-# `crates/frontend`, so no wasm toolchain is pulled.
+# `crates/frontend`, so no wasm toolchain is pulled here.
 RUN cargo build --release -p terraops-backend
+
+# ---- Stage 2: frontend WASM bundle ----------------------------------------
+FROM rust:1.88-bookworm AS frontend-build
+
+ENV CARGO_TERM_COLOR=never \
+    CARGO_NET_RETRY=10 \
+    CARGO_HTTP_MULTIPLEXING=false \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+    RUSTFLAGS="-C debuginfo=0"
+
+WORKDIR /workspace
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && rustup target add wasm32-unknown-unknown \
+ && cargo install --locked trunk --version 0.21.14 \
+ && cargo install --locked wasm-bindgen-cli --version 0.2.92
+
+COPY Cargo.toml ./
+COPY crates/shared   ./crates/shared
+COPY crates/backend  ./crates/backend
+COPY crates/frontend ./crates/frontend
+
+WORKDIR /workspace/crates/frontend
+RUN trunk build --release --offline
 
 # ---- Final runtime ---------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -63,10 +77,8 @@ RUN apt-get update \
  && mkdir -p /runtime /app/dist /app/scripts \
  && chown -R terraops:terraops /runtime /app
 
-COPY --from=backend-build /workspace/target/release/terraops-backend /usr/local/bin/terraops-backend
-
-# SPA shell (scaffold): P1 replaces this COPY with a Trunk build stage.
-COPY crates/frontend/dist-scaffold/ /app/dist/
+COPY --from=backend-build  /workspace/target/release/terraops-backend /usr/local/bin/terraops-backend
+COPY --from=frontend-build /workspace/crates/frontend/dist/           /app/dist/
 
 COPY scripts/dev_bootstrap.sh  /app/scripts/dev_bootstrap.sh
 COPY scripts/gen_tls_certs.sh  /app/scripts/gen_tls_certs.sh

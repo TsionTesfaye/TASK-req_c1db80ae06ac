@@ -11,11 +11,15 @@ observations, catalog governance, and talent intelligence. It runs entirely
 inside one Docker network, exposes one TLS origin on `https://localhost:8443`,
 and has no outbound network dependencies at runtime.
 
-This repository currently contains the **P0 scaffold + P1 backend shared
-foundations** (identity, RBAC, sessions, admin security, retention,
-monitoring, reference data, notifications, middleware stack, real HTTP
-test suite). The P1 frontend SPA surface and P2–P5 feature phases are
-tracked in [`plan.md`](./plan.md).
+This repository currently contains the **P1 shared foundations** —
+complete backend (identity, RBAC, sessions, admin security, retention,
+monitoring, reference data, notifications, middleware stack, 52
+no-mock integration tests) **plus** the complete P1 frontend surface
+(Yew SPA shell, router, auth / toast / notifications context, typed
+API client with 3-second timeout + single-GET-retry, `PermGate`-aware
+nav, and real admin / monitoring / notifications pages). The P2–P5
+feature phases (P-A Catalog, P-B KPI/Environmental, P-C Talent, and
+the final hardening gate) are tracked in [`plan.md`](./plan.md).
 
 ## Tech Stack
 
@@ -162,9 +166,10 @@ crates/shared/              # shared DTOs, errors, roles, permissions, paginatio
 crates/backend/             # Actix-web server (serves SPA + REST API on :8443)
 crates/frontend/            # Yew SPA (built by Trunk, bundled into the backend image)
 docker-compose.yml          # services: db, app; profile: tests
-Dockerfile.app              # scaffold: backend `cargo build --release` + prebuilt SPA shell copied
-                            #           from crates/frontend/dist-scaffold/ (Trunk build stage
-                            #           lands in P1 with the first real Yew code)
+Dockerfile.app              # two build stages (backend `cargo build --release` +
+                            #           frontend `trunk build --release`) plus a slim
+                            #           debian runtime that serves the real Yew SPA
+                            #           from /app/dist and the REST API on :8443
 Dockerfile.tests            # scaffold: Rust toolchain only (rust:1.88-bookworm + bash + jq);
                             #           Node, pinned Chromium, wasm-bindgen-test runner, grcov,
                             #           and Playwright browsers arrive in P1 alongside their
@@ -216,12 +221,17 @@ Current-scope disclosures (updated as features land):
 - `scripts/seed_demo.sh` now invokes `terraops-backend seed`, which is
   idempotent and creates/updates the five demo users with the role
   matrix above. Running it repeatedly preserves operator-set passwords.
-- **Frontend SPA status:** the Yew shell ships the login placeholder
-  route. The real P1 SPA pages (full auth flow, admin surfaces,
-  notifications center, monitoring pages, change-password) and the
-  `Dockerfile.app` Trunk build stage are the remaining P1 tail items —
-  see `plan.md` for the exact file-by-file state. The backend contract
-  is already complete and callable from any HTTP client today.
+- **Frontend SPA status:** P1 complete. The Yew SPA ships a real
+  router, auth/toast/notifications context providers, permission-aware
+  nav, a typed `ApiClient` with hard 3 s timeout + single-GET retry +
+  unified error mapping (`wasm-bindgen-test` coverage for the timeout
+  race and error mapping), and real pages for login, change-password,
+  admin (users, allowlist, retention, mTLS, audit), monitoring
+  (latency, errors, crashes), and the notifications center. The
+  minimal `dashboard::Home` placeholder shows identity + permissions
+  and hands off to the P-B KPI experience later. The `Dockerfile.app`
+  now has a real Trunk + wasm-bindgen stage that replaces the P0
+  `dist-scaffold` shell.
 - All 77 REST endpoints are listed authoritatively in
   `../docs/api-spec.md`. P1 delivers 40 of them (the shared-foundation
   subset); P-A/P-B/P-C packages ship the remaining 37.

@@ -1,10 +1,12 @@
-//! Yew SPA entrypoint. Scaffold-level: mounts the router with a single
-//! `/login` placeholder route. Real auth flows, page content, and state
-//! plumbing land in P1 per `plan.md`.
+//! Yew SPA entrypoint. Mounts `App` (which wires auth/toast/notifications
+//! context providers and the real router) at `#root`.
 
 mod api;
 mod app;
+mod components;
+mod pages;
 mod router;
+mod state;
 
 fn main() {
     yew::Renderer::<app::App>::new().render();

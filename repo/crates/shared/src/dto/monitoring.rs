@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatencyBucket {
     pub route: String,
     pub method: String,
@@ -14,7 +14,7 @@ pub struct LatencyBucket {
     pub p99_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorBucket {
     pub route: String,
     pub method: String,
@@ -23,7 +23,7 @@ pub struct ErrorBucket {
     pub error_rate: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrashReport {
     pub id: Uuid,
     pub user_id: Option<Uuid>,
@@ -34,7 +34,7 @@ pub struct CrashReport {
     pub reported_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IngestCrashReport {
     pub page: Option<String>,
     pub agent: Option<String>,

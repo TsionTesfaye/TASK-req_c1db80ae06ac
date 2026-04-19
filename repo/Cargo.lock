@@ -1058,6 +1058,7 @@ checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",
@@ -3663,12 +3664,16 @@ dependencies = [
 name = "terraops-frontend"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "futures",
  "gloo-net 0.5.0",
+ "gloo-storage 0.3.0",
  "gloo-timers 0.3.0",
  "js-sys",
  "serde",
  "serde_json",
  "terraops-shared",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

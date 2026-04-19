@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::roles::Role;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserListItem {
     pub id: Uuid,
     pub display_name: String,
@@ -17,7 +17,7 @@ pub struct UserListItem {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserDetail {
     pub id: Uuid,
     pub display_name: String,
@@ -34,7 +34,7 @@ pub struct UserDetail {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateUserRequest {
     pub display_name: String,
     pub email: String,
@@ -43,7 +43,7 @@ pub struct CreateUserRequest {
     pub timezone: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UpdateUserRequest {
     pub display_name: Option<String>,
     pub email: Option<String>,
@@ -51,12 +51,12 @@ pub struct UpdateUserRequest {
     pub is_active: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssignRolesRequest {
     pub role_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleDto {
     pub id: Uuid,
     pub name: String,
