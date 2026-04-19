@@ -518,7 +518,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 - [x] Merge P-A, P-B, P-C into `main`; resolve any contract drift. _(99e7f89)_
 - [x] Verify producers → `notifications::emit` → notification center UI → mailbox export end-to-end. _(alert evaluator + report scheduler integration tests green; P-A product/import producers already emit; N1 feed + N7 mailbox export endpoints live.)_
 - [x] Wire retention enforcer sweeps across env raw (18mo), KPI aggregates (5yr), feedback (24mo inactive); hourly metric-roll aggregation. _(new `crates/backend/src/jobs/` module starts alert evaluator, report scheduler, retention sweep, hourly metric rollup, notification retry worker from `app::run`; three dedicated integration tests cover each sweep path.)_
-- [-] Seed cross-domain demo dataset (products + env readings + candidates + roles + feedback crossing the cold-start threshold + alerts + notifications). _(per-role demo users seeded by `terraops-backend seed`; per-domain dataset still synthetic inside tests rather than persistent seeds.)_
+- [x] Seed cross-domain demo dataset (products + env readings + candidates + roles + feedback crossing the cold-start threshold + alerts + notifications). _(`seed::seed_demo_dataset` idempotently populates 3 products + tax rates + history, 2 env sources with 24 observations each, 2 metric definitions with 6 computations each, 1 alert rule + 1 fired event, 5 candidates + 2 open roles + 12 recruiter-owned feedback rows (crosses the cold-start threshold so T6 exercises blended scoring), and 3 demo notifications for the admin. Invoked from `terraops-backend seed` so the normal `docker compose up --build && ./init_db.sh` path populates every role's workspace. `t_int_demo_seed_populates_cross_domain` asserts row counts, idempotency, and navigability through real HTTP routes.)_
 - [x] Integration tests: retention purge with time shim; alert→notification→mailbox; report referencing KPI + env. _(crates/backend/tests/integration_tests.rs — 14 passing.)_
 - [x] Commit: `feat(integration,hardening): P3 background jobs + P4 hardening coverage` (facea88).
 
@@ -544,11 +544,11 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 ## Definition Of Done (repo-local mirror)
 
 - [x] All 114 endpoints in `docs/api-spec.md` implemented, auth-classified, and covered by a no-mock HTTP test discovered by `scripts/audit_endpoints.sh`.
-- [ ] Every actor success path executable via the real UI.
-- [ ] `docker compose up --build` cold-boots with no `.env` and no hardcoded secrets.
-- [ ] `./run_tests.sh` exits 0 with all four gates green.
-- [ ] `./init_db.sh` idempotent.
-- [ ] mTLS handshake refusal proven in integration.
-- [ ] `email_ciphertext` non-plaintext; no plaintext email substring in `users` rows.
-- [ ] README matches strict audit contract.
-- [ ] No placeholder/demo/debug UI visible in product surfaces.
+- [x] Every actor success path executable via the real UI. _(P-A/P-B/P-C page sets delivered; demo seed populates every role workspace with navigable data on cold boot.)_
+- [x] `docker compose up --build` cold-boots with no `.env` and no hardcoded secrets. _(`scripts/dev_bootstrap.sh` generates every secret on first boot into the `terraops-runtime` volume; entrypoint runs migrate + seed + serve.)_
+- [-] `./run_tests.sh` exits 0 with all four gates green. _(Gate 1 + Gate 2 + Gate 3 green end-to-end in Docker; flow gate wired as opt-in via `TERRAOPS_RUN_FLOW=1`. Line-coverage thresholds for Gate 1 (`cargo llvm-cov --fail-under-lines 90`) and Gate 2 (`grcov --threshold 80`) still pending tooling install + baseline measurement pass.)_
+- [x] `./init_db.sh` idempotent. _(Wraps `terraops-backend migrate && terraops-backend seed`; both sub-commands use `ON CONFLICT DO UPDATE` / existence-check patterns so repeated invocations are no-ops — verified by `t_int_demo_seed_populates_cross_domain` which asserts stable row counts on a second `seed_demo` call.)_
+- [-] mTLS handshake refusal proven in integration. _(SEC1–SEC9 HTTP surface for pin-set management + `mtls_config.enforced` flag are live and tested; rustls listener + pinned `ClientCertVerifier` swap on `enforced=true` still requires an ephemeral-port in-process harness to prove unpinned TLS handshake refusal at the transport layer.)_
+- [x] `email_ciphertext` non-plaintext; no plaintext email substring in `users` rows. _(Proven by `t_int_error_envelopes_do_not_leak_secrets`, which asserts `users.email_ciphertext` contains no plaintext email substring for any seeded row.)_
+- [x] README matches strict audit contract. _(Project type, startup, access, verification, demo credentials per role, `docker compose up --build` + legacy `docker-compose up` strings, `./run_tests.sh` command, mock/default-behaviour disclosure all present.)_
+- [x] No placeholder/demo/debug UI visible in product surfaces. _(All role workspaces render through shared `Layout + PermGate + Placeholder{Loading,Empty,Error}`; no debug/demo components in product-facing pages.)_

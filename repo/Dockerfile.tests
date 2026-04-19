@@ -51,6 +51,19 @@ RUN apt-get update \
 RUN rustup target add wasm32-unknown-unknown \
  && cargo install --locked wasm-bindgen-cli --version 0.2.118
 
+# Coverage tooling for the threshold-enforcing Gate 1 + Gate 2 wrappers
+# documented in `docs/test-coverage.md §Coverage Gate Math`:
+#   * `cargo-llvm-cov` drives the native-Rust line-coverage gate
+#     (`--fail-under-lines 90` applied to terraops-shared + terraops-backend).
+#   * `grcov` drives the frontend WASM line-coverage gate
+#     (`--threshold 80` applied to terraops-frontend).
+# `llvm-tools-preview` ships the profdata/profcov binaries both tools
+# rely on. Installed here so `run_tests.sh` can layer thresholds on
+# without needing on-demand `cargo install` at gate time.
+RUN rustup component add llvm-tools-preview \
+ && cargo install --locked cargo-llvm-cov --version 0.6.11 \
+ && cargo install --locked grcov --version 0.8.19
+
 # Playwright runtime (opt-in flow gate). The browsers themselves (pinned
 # Chromium) are provisioned on first use by `npx playwright install
 # chromium` invoked from `run_tests.sh` when `TERRAOPS_RUN_FLOW=1`. We
