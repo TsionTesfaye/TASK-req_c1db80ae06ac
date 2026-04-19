@@ -81,7 +81,8 @@ GATE1_IGNORE_REGEX='/(tests|migrations|\.sqlx)/|backend/src/(main|app|tls|spa|co
 
 GATE1_TESTS=(http_p1 parity_tests talent_search_tests talent_recommend_tests \
              talent_weights_tests talent_watchlist_tests talent_feedback_tests \
-             integration_tests mtls_handshake_tests budget_tests)
+             integration_tests mtls_handshake_tests budget_tests \
+             deep_products_tests deep_metrics_kpi_tests deep_alerts_reports_tests)
 
 section "Gate 1 — cargo test + cargo llvm-cov (terraops-backend + terraops-shared, --fail-under-lines ${GATE1_LINE_FLOOR})"
 if ! compose build tests; then

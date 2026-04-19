@@ -23,7 +23,7 @@ pub async fn summary(pool: &PgPool) -> AppResult<KpiSummary> {
     // cycle_time_avg: average number of hours between alert_events.fired_at
     // and alert_events.resolved_at across all events in the past 30 days.
     let cycle_hours: (Option<f64>,) = sqlx::query_as(
-        "SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - fired_at)) / 3600.0) \
+        "SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - fired_at)) / 3600.0)::FLOAT8 \
          FROM alert_events \
          WHERE resolved_at IS NOT NULL \
            AND fired_at >= NOW() - INTERVAL '30 days'",
@@ -109,7 +109,7 @@ pub async fn cycle_time(
 
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT DATE(fired_at AT TIME ZONE 'UTC') AS day, \
-                AVG(EXTRACT(EPOCH FROM (resolved_at - fired_at)) / 3600.0) AS avg_hours, \
+                (AVG(EXTRACT(EPOCH FROM (resolved_at - fired_at)) / 3600.0))::FLOAT8 AS avg_hours, \
                 COUNT(*)::BIGINT AS cnt \
          FROM alert_events \
          WHERE resolved_at IS NOT NULL \
