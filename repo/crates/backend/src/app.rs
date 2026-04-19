@@ -27,11 +27,16 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let keys = Arc::new(RuntimeKeys::load_or_init(&cfg.runtime_dir)?);
 
     let state = AppState {
-        pool,
+        pool: pool.clone(),
         keys,
         static_dir: cfg.static_dir.clone(),
         default_timezone: cfg.default_timezone.clone(),
     };
+
+    // Start background jobs (alert evaluator, report scheduler, retention
+    // sweep, metric rollup, notification retry). Handles are intentionally
+    // dropped: the Tokio runtime owns them until process shutdown.
+    let _job_handles = crate::jobs::start_all(pool, cfg.runtime_dir.clone());
 
     tracing::info!(bind = %cfg.bind_addr, "terraops-backend listening");
 

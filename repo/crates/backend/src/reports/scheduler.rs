@@ -40,7 +40,8 @@ pub fn start_report_scheduler(pool: PgPool, runtime_dir: PathBuf) -> JoinHandle<
     })
 }
 
-async fn run_due_jobs(pool: &PgPool, runtime_dir: &PathBuf) -> AppResult<()> {
+/// Run a single scheduler pass synchronously. Exposed for integration tests.
+pub async fn run_due_jobs(pool: &PgPool, runtime_dir: &PathBuf) -> AppResult<()> {
     // Promote retryable failures back to scheduled
     sqlx::query(
         "UPDATE report_jobs SET status='scheduled' \

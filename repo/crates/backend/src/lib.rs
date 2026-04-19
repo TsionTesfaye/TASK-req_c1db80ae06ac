@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod db;
 pub mod errors;
 pub mod handlers;
+pub mod jobs;
 pub mod kpi;
 pub mod metrics_env;
 pub mod middleware;

@@ -40,7 +40,8 @@ pub fn start_alert_evaluator(pool: PgPool) -> JoinHandle<()> {
     })
 }
 
-async fn evaluate_all(pool: &PgPool) -> AppResult<()> {
+/// Run a single evaluator pass synchronously. Exposed for integration tests.
+pub async fn evaluate_all(pool: &PgPool) -> AppResult<()> {
     // Load all enabled rules
     #[derive(sqlx::FromRow)]
     struct RuleRef {
