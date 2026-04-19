@@ -69,6 +69,15 @@ subtle = "2"
 
 validator = { version = "0.18", features = ["derive"] }
 
+# P-A: Catalog & Governance
+actix-multipart = "0.7"
+calamine = "0.24"
+
+# P-B: report rendering
+printpdf = "0.7"
+csv = "1"
+rust_xlsxwriter = "0.77"
+
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -106,6 +106,11 @@ pub async fn truncate_dynamic_tables(pool: &PgPool) {
             audit_log, \
             sessions, user_roles, users, \
             endpoint_allowlist, device_certs, client_crash_reports, api_metrics, \
+            talent_watchlist_items, talent_watchlists, talent_weights, \
+            talent_feedback, roles_open, candidates, \
+            kpi_rollup_daily, alert_events, alert_rules, report_jobs, \
+            metric_computations, metric_definitions, \
+            env_observations, env_sources, \
             categories, brands, units, departments, sites \
          RESTART IDENTITY CASCADE",
     )
