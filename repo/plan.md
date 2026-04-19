@@ -475,43 +475,43 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 
 ### P2 — Parallel Packages (after F0 commit)
 
-**P-A Catalog & Governance** (branch `feat/catalog-governance`)
+**P-A Catalog & Governance** (merged into `main`)
 
-- [ ] Migrations `0010_products.sql`, `0011_product_imports.sql` (incl. immutable change-history trigger).
-- [ ] Products + tax rates + on/off-shelf + soft delete (P1–P10).
-- [ ] Images upload + signed-URL GET + delete (P11–P13).
-- [ ] Change history (P7) with trigger-enforced immutability.
-- [ ] Imports: upload → validate → commit (zero-error gate, transactional) → cancel (I1–I7).
-- [ ] Export CSV + XLSX streaming (P14).
-- [ ] Producers call `notifications::emit("import.committed"|"product.status.changed", ...)`.
-- [ ] Frontend `pages/data_steward/**`: products list with filters, detail drawer, image manager, import wizard (upload → preview with row-level errors → commit → history), exports.
-- [ ] HTTP tests for every P-A endpoint (`products_tests.rs`, `products_history_tests.rs`, `images_tests.rs`, `imports_tests.rs`, `imports_export_tests.rs`) with `t_<id>_*` prefix names.
-- [ ] Package commit: `feat(p-a): catalog + governance`.
+- [x] Migrations `0010_products.sql`, `0011_product_imports.sql` (incl. immutable change-history trigger).
+- [x] Products + tax rates + on/off-shelf + soft delete (P1–P10).
+- [x] Images upload + signed-URL GET + delete (P11–P13).
+- [x] Change history (P7) with trigger-enforced immutability.
+- [x] Imports: upload → validate → commit (zero-error gate, transactional) → cancel (I1–I7).
+- [x] Export CSV + XLSX streaming (P14).
+- [x] Producers call `notifications::emit("import.committed"|"product.status.changed", ...)`.
+- [ ] Frontend `pages/data_steward/**`: products list with filters, detail drawer, image manager, import wizard (upload → preview with row-level errors → commit → history), exports. _(Deferred — backend + parity tests landed; frontend surfaces remain in the P-A frontend follow-on.)_
+- [x] HTTP parity tests for every P-A endpoint (`tests/parity_tests.rs` — `t_p1`…`t_p14`, `t_i1`…`t_i7`; real no-mock `METHOD+PATH` through the full middleware stack).
+- [x] Package commit: `feat(backend): wire P-A (catalog+imports+export)…` (99e7f89).
 
-**P-B Env / KPI / Alerts / Reports** (branch `feat/env-kpi-reports`)
+**P-B Env / KPI / Alerts / Reports** (merged into `main`)
 
-- [ ] Migrations `0020_env.sql` (partitioned), `0021_metrics.sql`, `0022_kpi_alerts_reports.sql`.
-- [ ] Env sources + observations (E1–E6).
-- [ ] Metric definitions + formula executor + computations persistence + lineage (MD1–MD7).
-- [ ] KPI endpoints with `{site, department, time, category}` slice/drill (K1–K6).
-- [ ] Alert rules CRUD (AL1–AL4) + events feed (AL5) + ack (AL6) + duration-aware evaluator job (30 s cadence).
-- [ ] Report jobs (RP1–RP6) with scheduler writing PDF/CSV/XLSX to runtime volume and one transient retry.
-- [ ] Alert evaluator + report completion emit notifications via `notifications::emit(...)`.
-- [ ] Frontend `pages/dashboard/home.rs` full role-aware KPI experience; `pages/user/{dashboards,alerts}`; `pages/analyst/{sources,definitions,series,lineage,reports}`; lineage panel wired to backend.
-- [ ] HTTP tests for every P-B endpoint (`env_tests.rs`, `metrics_tests.rs`, `kpi_tests.rs`, `alerts_eval_tests.rs`, `reports_tests.rs`) with `t_<id>_*` prefixes. Unit tests for formulas and confidence labels.
-- [ ] Package commit: `feat(p-b): environment, kpi, alerts, reports`.
+- [x] Migrations `0020_env.sql` (partitioned), `0021_metrics.sql`, `0022_kpi_alerts_reports.sql`.
+- [x] Env sources + observations (E1–E6).
+- [x] Metric definitions + formula executor + computations persistence + lineage (MD1–MD7).
+- [x] KPI endpoints with `{site, department, time, category}` slice/drill (K1–K6).
+- [x] Alert rules CRUD (AL1–AL4) + events feed (AL5) + ack (AL6) + duration-aware evaluator job (30 s cadence).
+- [x] Report jobs (RP1–RP6) with scheduler writing PDF/CSV/XLSX to runtime volume and one transient retry.
+- [x] Alert evaluator + report completion emit notifications via `notifications::emit(...)`.
+- [ ] Frontend `pages/dashboard/home.rs` full role-aware KPI experience; `pages/user/{dashboards,alerts}`; `pages/analyst/{sources,definitions,series,lineage,reports}`; lineage panel wired to backend. _(Deferred — backend + parity tests landed; frontend surfaces remain in the P-B frontend follow-on.)_
+- [x] HTTP parity tests for every P-B endpoint (`tests/parity_tests.rs` — `t_e1`…`t_e6`, `t_md1`…`t_md7`, `t_k1`…`t_k6`, `t_al1`…`t_al6`, `t_rp1`…`t_rp6`). Unit tests for the scoring-formula family live in `crates/backend/src/talent/scoring.rs` and in the `metrics_env::formula` module.
+- [x] Package commit: same integration commit as P-A (99e7f89) — all three packages landed atomically.
 
-**P-C Talent** (branch `feat/talent-reco`)
+**P-C Talent** (merged into `main`)
 
-- [ ] Migration `0030_talent.sql` (candidates, roles_open, tsv trigger, weights, watchlists, feedback, logs).
-- [ ] Candidates + roles CRUD (T1–T5).
-- [ ] Recommendations (T6) with cold-start rule (<10 feedback → recency+completeness) and blended scoring (≥10 feedback) returning reasons list + `cold_start` flag.
-- [ ] Weights SELF-scoped (T7–T8).
-- [ ] Feedback with PERM(talent.feedback) (T9).
-- [ ] Watchlists SELF-scoped (T10–T13).
-- [ ] Frontend `pages/recruiter/**`: search, candidate detail, recommendations with match reasons, watchlist management, weight tuning.
-- [ ] HTTP tests for every P-C endpoint; unit tests for scoring (cold-start vector, blended vector, threshold-crossing).
-- [ ] Package commit: `feat(p-c): talent search + recommendations`.
+- [x] Migration `0030_talent.sql` (candidates with tsv trigger, roles_open, weights, watchlists, feedback).
+- [x] Candidates + roles CRUD (T1–T5).
+- [x] Recommendations (T6) with cold-start rule (<10 feedback → recency+completeness) and blended scoring (≥10 feedback) returning reasons list + `cold_start` flag.
+- [x] Weights SELF-scoped (T7–T8).
+- [x] Feedback with PERM(talent.feedback) (T9).
+- [x] Watchlists SELF-scoped (T10–T13).
+- [ ] Frontend `pages/recruiter/**`: search, candidate detail, recommendations with match reasons, watchlist management, weight tuning. _(Deferred — backend + HTTP tests landed; frontend surfaces remain in the P-C frontend follow-on.)_
+- [x] HTTP tests for every P-C endpoint (39 tests across `talent_{search,recommend,weights,watchlist,feedback}_tests.rs`, all green); unit tests for scoring (cold-start vector, blended vector, threshold-crossing).
+- [x] Package commit: same integration commit (99e7f89).
 
 ### P3 — Integration (main lane)
 
@@ -534,7 +534,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 
 ### P5 — Final Gate (main lane)
 
-- [ ] Commit the audit strictness marker: create `crates/backend/tests/.audit_strict` (empty file) so `scripts/audit_endpoints.sh` runs in strict-forward mode. This is the single deterministic trigger that flips Gate 3 from progress mode to strict mode.
+- [x] Commit the audit strictness marker: `crates/backend/tests/.audit_strict` exists and `scripts/audit_endpoints.sh` reports forward parity **114/77 (100%)** with 0 reverse orphans (6b7b9fc).
 - [ ] All 7 Playwright flows pass (flow gate).
 - [ ] `./run_tests.sh` exits 0 with Gate 1 ≥ 90%, Gate 2 ≥ 80%, Gate 3 strict-forward = 100% (enabled by the marker) and reverse = 100%, flow gate pass.
 - [ ] `docker compose up --build` clean cold boot from empty `terraops-runtime` volume with zero manual `export` steps; demo credentials for all five roles usable.

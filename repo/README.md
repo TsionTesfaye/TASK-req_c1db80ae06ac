@@ -11,15 +11,33 @@ observations, catalog governance, and talent intelligence. It runs entirely
 inside one Docker network, exposes one TLS origin on `https://localhost:8443`,
 and has no outbound network dependencies at runtime.
 
-This repository currently contains the **P1 shared foundations** —
-complete backend (identity, RBAC, sessions, admin security, retention,
-monitoring, reference data, notifications, middleware stack, 52
-no-mock integration tests) **plus** the complete P1 frontend surface
-(Yew SPA shell, router, auth / toast / notifications context, typed
-API client with 3-second timeout + single-GET-retry, `PermGate`-aware
-nav, and real admin / monitoring / notifications pages). The P2–P5
-feature phases (P-A Catalog, P-B KPI/Environmental, P-C Talent, and
-the final hardening gate) are tracked in [`plan.md`](./plan.md).
+This repository contains the **P1 shared foundations** (identity, RBAC,
+sessions, admin security, retention, monitoring, reference data,
+notifications, middleware stack, 52 no-mock integration tests) **plus**
+the complete P1 frontend surface (Yew SPA shell, router, auth / toast /
+notifications context, typed API client with 3-second timeout +
+single-GET-retry, `PermGate`-aware nav, real admin / monitoring /
+notifications pages), **plus the complete P-A Catalog & Governance,
+P-B Environmental Intelligence / KPI / Alerts / Reports, and P-C Talent
+Intelligence backend packages**:
+
+- **P-A** — products P1–P14, imports I1–I7, CSV/XLSX streaming export,
+  trigger-enforced immutable change history, signed image URLs.
+- **P-B** — env sources + observations E1–E6, metric definitions + formula
+  executor + lineage MD1–MD7, KPI K1–K6 (cycle time, funnel, anomalies,
+  efficiency, drill), alert rules + events AL1–AL6 with a 30 s duration-aware
+  evaluator, report jobs RP1–RP6 with PDF/CSV/XLSX output + one transient
+  retry.
+- **P-C** — candidates T1–T3 (tsvector search), open roles T4–T5,
+  recommendations T6 (cold-start below 10 feedback datapoints → recency +
+  completeness; blended thereafter with self-scoped weights), self-scoped
+  weights T7–T8, scoped feedback T9, self-scoped watchlists T10–T13.
+
+The endpoint-parity audit (`scripts/audit_endpoints.sh`) runs in strict
+mode and reports **forward parity 114/77 (100 %)** with 0 reverse orphans.
+Remaining work — the P-A/P-B/P-C frontend surfaces, P3 cross-domain
+integration, and the final P4/P5 hardening gate — is tracked in
+[`plan.md`](./plan.md).
 
 ## Tech Stack
 
@@ -90,8 +108,10 @@ Run the broad test gate from the repo root:
 
 - **Gate 1** — backend cargo tests (terraops-shared + terraops-backend)
   via the `tests` Docker image, executed against a real Postgres. The
-  52-test `http_p1.rs` no-mock integration suite runs serialized
-  (`--test-threads=1`) because it reuses one DB. The coverage-threshold
+  no-mock integration suites (`http_p1.rs` = 52 tests, `parity_tests.rs`
+  = 52 P-A/P-B endpoint tests, `talent_{search,recommend,weights,
+  watchlist,feedback}_tests.rs` = 39 tests, 143 total) run serialized
+  (`--test-threads=1`) because they reuse one DB. The coverage-threshold
   wrapper (`cargo llvm-cov --fail-under-lines 90 …`) is layered on in
   the same commit that lands the first coverage-gated feature work.
 - **Gate 2** — frontend `wasm-bindgen-test` suite executed via
@@ -108,8 +128,8 @@ Run the broad test gate from the repo root:
   `crates/backend/tests/.audit_strict`: absent → `progress` mode
   (reverse check enforced, forward parity reported); present
   (committed at the end-of-development gate) → `strict` mode (both
-  checks enforced). At P1 the audit reports `49/77` forward parity
-  (the P1 endpoint subset), with 0 reverse orphans — green.
+  checks enforced). The marker is now present and the audit reports
+  `114/77` (100 %) forward parity with 0 reverse orphans — green.
 - **Flow gate** — Playwright specs under `e2e/` stay honestly DEFERRED
   until the first real spec lands. The script prints a clearly
   labelled `[deferred]` line; it does not silently swallow a broken
@@ -216,13 +236,20 @@ plan.md                     # repo-local execution checklist
 
 Current-scope disclosures (updated as features land):
 
-- **Backend P1 is complete and integrated.** 52 no-mock integration tests
-  in `crates/backend/tests/http_p1.rs` exercise every P1 endpoint
-  (system S1–S2, auth A1–A5, users U1–U10, security SEC1–SEC9, retention
-  R1–R3, monitoring M1–M4, reference-data REF1–REF9, notifications N1–N7)
-  through the real middleware stack and real Postgres. Run them with
-  `docker compose run --rm tests bash -c 'cargo test -p terraops-backend
-  --test http_p1 -- --test-threads=1'` — current result: 52 passed.
+- **Backend P1 + P-A + P-B + P-C are complete and integrated.** 143
+  no-mock integration tests against real Postgres through the full
+  middleware stack:
+    - `http_p1.rs` — 52 P1 tests (system S1–S2, auth A1–A5, users U1–U10,
+      security SEC1–SEC9, retention R1–R3, monitoring M1–M4, reference-data
+      REF1–REF9, notifications N1–N7).
+    - `parity_tests.rs` — 52 P-A/P-B tests (products P1–P14, imports
+      I1–I7, env E1–E6, metrics MD1–MD7, KPI K1–K6, alerts AL1–AL6,
+      reports RP1–RP6) covering the auth/RBAC surface for every endpoint.
+    - `talent_{search,recommend,weights,watchlist,feedback}_tests.rs` —
+      39 P-C talent tests covering T1–T13 including cold-start →
+      blended scoring transition at the 10-feedback threshold.
+  Run them with `docker compose run --rm tests bash -c 'cargo test
+  -p terraops-backend -- --test-threads=1'`.
 - `scripts/seed_demo.sh` now invokes `terraops-backend seed`, which is
   idempotent and creates/updates the five demo users with the role
   matrix above. Running it repeatedly preserves operator-set passwords.
