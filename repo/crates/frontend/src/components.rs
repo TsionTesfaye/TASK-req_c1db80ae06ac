@@ -196,17 +196,19 @@ pub struct PermGateProps {
     pub fallback: Option<Html>,
 }
 
-/// Renders children only if the current user holds `permission`. Otherwise
-/// renders the fallback (default: a friendly "not authorized" card).
+/// Renders children only if the current user holds `permission`. When the
+/// user is not authenticated at all (no `AuthContext.state`), this
+/// redirects to `/login` — unauthenticated access to a permission-gated
+/// surface must never dead-end on an in-page denial card. When the user
+/// is authenticated but missing the permission, renders the fallback
+/// (default: a friendly "not authorized" card).
 #[function_component(PermGate)]
 pub fn perm_gate(props: &PermGateProps) -> Html {
     let auth = use_context::<AuthContext>().expect("AuthContext");
-    let allowed = auth
-        .state
-        .as_ref()
-        .map(|s| s.has_permission(&props.permission))
-        .unwrap_or(false);
-    if allowed {
+    let Some(state) = auth.state.as_ref() else {
+        return html! { <Redirect<Route> to={Route::Login} /> };
+    };
+    if state.has_permission(&props.permission) {
         html! { <>{ for props.children.iter() }</> }
     } else if let Some(fb) = &props.fallback {
         fb.clone()

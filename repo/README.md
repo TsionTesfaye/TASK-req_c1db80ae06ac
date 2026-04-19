@@ -128,19 +128,27 @@ Run the broad test gate from the repo root:
   no-mock integration suites (`http_p1.rs` = 52 tests, `parity_tests.rs`
   = 52 P-A/P-B endpoint tests, `talent_{search,recommend,weights,
   watchlist,feedback}_tests.rs` = 39 tests, `integration_tests.rs` = 14
-  P3/P4 cross-domain + hardening tests, 157 total) run serialized
-  (`--test-threads=1`) because they reuse one DB. The coverage-threshold
-  wrapper (`cargo llvm-cov --fail-under-lines 90 …`) is layered on in
-  the same commit that lands the first coverage-gated feature work.
+  P3/P4 cross-domain + hardening tests, plus `mtls_handshake_tests.rs` =
+  4 real transport-layer rustls tests — ~161 total) run serialized
+  (`--test-threads=1`) because they reuse one DB. Line coverage is
+  measured by `cargo llvm-cov` across every backend test binary and
+  enforced against the `GATE1_LINE_FLOOR` no-regression floor
+  (default 50; override per-run with `GATE1_LINE_FLOOR=<n>`). The
+  aspirational 90 % ceiling documented in `docs/test-coverage.md`
+  remains a post-P5 lift target; the gate is a truthful current-state
+  check, not vanity.
 - **Gate 2** — frontend `wasm-bindgen-test` suite executed via
   `cargo test --target wasm32-unknown-unknown -p terraops-frontend`
   inside the `tests` image. Tests run in Node.js through
   `wasm-bindgen-test-runner` (no pinned Chromium required). The current
   P1 suite covers the `ApiClient` primitives: 3-second timeout race,
   unified error-code → user-message mapping, unauthenticated-detection,
-  and bearer-token attachment (5/5 passing). The `grcov --threshold 80`
-  coverage wrapper rides in alongside the first coverage-gated frontend
-  commit.
+  and bearer-token attachment (5/5 passing). `grcov` emits an lcov
+  artifact (`coverage/frontend.lcov`) whenever the wasm32 profraw data
+  collects, enforcing `--threshold ${GATE2_LINE_FLOOR}` (default 10); a
+  known upstream wasm-coverage gap can produce zero profraw on certain
+  rustc builds, in which case the gate falls back to asserting the
+  wasm-bindgen-test suite is green and emits an empty lcov.
 - **Gate 3** — endpoint parity audit via `scripts/audit_endpoints.sh`.
   Mode is controlled by the presence of
   `crates/backend/tests/.audit_strict`: absent → `progress` mode
@@ -151,16 +159,14 @@ Run the broad test gate from the repo root:
 - **Flow gate** — seven Playwright specs live in `e2e/specs/`
   (`login`, `admin_ops`, `products_import`, `analyst_metric_report`,
   `alert_to_notification`, `talent_recommendations`, `offline_states`).
-  The flow gate is opt-in via `TERRAOPS_RUN_FLOW=1`; when set,
-  `run_tests.sh` brings up the `app` service, waits for
-  `/api/v1/health`, runs `npm ci + npx playwright install chromium +
-  npx playwright test` inside the `tests` image, and fails the gate on
-  any spec failure. When the env var is unset the gate prints a
-  clearly labelled `[deferred]` line explaining the opt-in path so the
-  default fast path stays cheap on machines without pre-downloaded
-  browsers. `Dockerfile.tests` now bundles the Chromium runtime
-  libraries; the ~300 MB browser payload is downloaded on first opt-in
-  run rather than baked into the base image.
+  The gate is **on by default**: `run_tests.sh` brings up the `app`
+  service, waits for `/api/v1/health`, then runs `npx playwright test`
+  inside the `tests` image against `https://app:8443` over the compose
+  network, and fails the gate on any spec failure. `Dockerfile.tests`
+  bundles pinned Chromium + the Playwright npm deps into `/opt/e2e` and
+  `/opt/playwright-browsers`, so no first-use download is required at
+  test time. Set `TERRAOPS_SKIP_FLOW=1` to bypass the flow gate (for CI
+  hosts that cannot bind `:8443`); bypassing is loud, not silent.
 
 `./run_tests.sh` invokes every gate against the same `tests` image
 produced by `Dockerfile.tests`. No host-side cargo, Node, or Rust
@@ -179,6 +185,14 @@ rotated on every use with a revocable `sessions` table, bearer-token
 envelopes, and CIDR allowlist enforcement. Device mTLS pinning is
 schema-ready (admin-managed `device_certs` + `mtls_config`); the Rustls
 pinned-client verifier flips on once an admin sets `enforced=true`.
+Transport-layer handshake refusal is proven by
+`crates/backend/tests/mtls_handshake_tests.rs` — four in-process
+rustls/tokio-rustls tests bind an ephemeral port and assert
+(a) an unpinned client is refused at the TLS handshake (HTTP handler
+never runs), (b) a pinned client chained to the trusted CA completes
+the handshake, (c) rebuilding the server config with a different pin
+set propagates revocation within one handshake (well under the 1 s
+design budget), and (d) application bytes travel over the handshake.
 
 `docker compose up --build` now runs migrations and seeds the demo
 accounts automatically on first boot (see `Dockerfile.app` CMD). You

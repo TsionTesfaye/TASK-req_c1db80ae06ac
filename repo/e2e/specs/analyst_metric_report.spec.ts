@@ -12,8 +12,16 @@ test("analyst reaches sources, definitions, kpi, reports", async ({ page }) => {
     await page.click("button[type=submit]");
     await expect(page).toHaveURL(/\/dashboard|\/$/, { timeout: 10_000 });
 
-    for (const slug of ["sources", "definitions", "kpi", "reports"]) {
-        await page.goto(`/analyst/${slug}`);
-        await expect(page.locator("body")).toContainText(new RegExp(slug, "i"));
+    // SPA routes are flat per `crates/frontend/src/router.rs`:
+    //   `/env/sources`, `/metrics/definitions`, `/kpi`, `/reports`.
+    const routes: Array<[string, RegExp]> = [
+        ["/env/sources", /source/i],
+        ["/metrics/definitions", /definition/i],
+        ["/kpi", /kpi/i],
+        ["/reports", /report/i],
+    ];
+    for (const [path, needle] of routes) {
+        await page.goto(path);
+        await expect(page.locator("body")).toContainText(needle);
     }
 });

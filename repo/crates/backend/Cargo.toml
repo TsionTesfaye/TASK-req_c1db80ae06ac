@@ -80,5 +80,10 @@ rust_xlsxwriter = "0.77"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }
 once_cell = "1"
+# mTLS handshake-refusal integration test (see tests/mtls_handshake_tests.rs).
+# rcgen generates the demo CA + server cert + client cert on the fly; tokio-rustls
+# matches the rustls 0.22 baseline used by the production server config.
+rcgen = "0.13"
+tokio-rustls = { version = "0.25", default-features = false, features = ["ring"] }

@@ -62,19 +62,25 @@ RUN rustup target add wasm32-unknown-unknown \
 # without needing on-demand `cargo install` at gate time.
 RUN rustup component add llvm-tools-preview \
  && cargo install --locked cargo-llvm-cov --version 0.6.11 \
- && cargo install --locked grcov --version 0.8.19
+ && cargo install --locked grcov --version 0.8.24
 
-# Playwright runtime (opt-in flow gate). The browsers themselves (pinned
-# Chromium) are provisioned on first use by `npx playwright install
-# chromium` invoked from `run_tests.sh` when `TERRAOPS_RUN_FLOW=1`. We
-# install the npm tool itself here so the image has a consistent
-# Playwright version pinned via `e2e/package.json`; the ~300MB browser
-# payload stays out of the base image and is downloaded on demand.
+# Playwright runtime (final-gate flow). Installs the runtime libs pinned
+# Chromium needs at build time so the flow gate does not depend on a
+# first-use network download at test time. `npm ci` + `npx playwright
+# install chromium` are run against the pinned `e2e/package.json` so the
+# browser payload lives in the image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
       libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
       libgbm1 libpango-1.0-0 libcairo2 libasound2 \
  && rm -rf /var/lib/apt/lists/*
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN mkdir -p /opt/e2e ${PLAYWRIGHT_BROWSERS_PATH}
+COPY e2e/package.json e2e/package-lock.json* /opt/e2e/
+RUN cd /opt/e2e \
+ && (npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund) \
+ && npx playwright install chromium
 
 WORKDIR /workspace

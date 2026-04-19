@@ -10,7 +10,11 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: "https://localhost:8443",
+    // When running the flow gate from the `tests` container, set
+    // `PLAYWRIGHT_BASE_URL=https://app:8443` so Chromium resolves the
+    // sibling `app` service on the compose network. Default stays
+    // `https://localhost:8443` for host-side ad-hoc runs.
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || "https://localhost:8443",
     ignoreHTTPSErrors: true, // dev-only self-signed cert
     trace: "retain-on-failure",
   },

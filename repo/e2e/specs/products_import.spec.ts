@@ -15,9 +15,9 @@ test("steward reaches products + imports surfaces", async ({ page }) => {
     await page.click("button[type=submit]");
     await expect(page).toHaveURL(/\/dashboard|\/$/, { timeout: 10_000 });
 
-    await page.goto("/data-steward/products");
+    await page.goto("/products");
     await expect(page.locator("body")).toContainText(/product/i);
 
-    await page.goto("/data-steward/imports");
+    await page.goto("/imports");
     await expect(page.locator("body")).toContainText(/import/i);
 });
