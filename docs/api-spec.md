@@ -202,7 +202,16 @@ All notification endpoints (N1–N7) are classified `SELF`. There is no `notific
 
 ## Totals
 
-**77 HTTP endpoints.** Every row above has a corresponding test row in `docs/test-coverage.md §Endpoint-to-Test Map`.
+**114 HTTP endpoints.** Every row above has a corresponding test row in `docs/test-coverage.md §Endpoint-to-Test Map`.
+
+Breakdown (matches the inventory tables above, all `## Endpoint Inventory` rows):
+
+- System S1–S2 (2) + Auth A1–A5 (5) + Users U1–U10 (10) + Security SEC1–SEC9 (9) + Retention R1–R3 (3) + Monitoring M1–M4 (4) + Reference Data REF1–REF9 (9) + Notifications N1–N7 (7) = **49 P1 endpoints**.
+- Products P1–P14 (14) + Product Imports I1–I7 (7) = **21 P-A endpoints**.
+- Env E1–E6 (6) + Metrics MD1–MD7 (7) + KPI K1–K6 (6) + Alerts AL1–AL6 (6) + Reports RP1–RP6 (6) = **31 P-B endpoints**.
+- Talent T1–T13 (13) = **13 P-C endpoints**.
+
+49 + 21 + 31 + 13 = **114 total**. The stale `77` figure that previously lived here predated the full P-A / P-B / P-C inventory and is superseded by this line.
 
 ## Contract Rules
 

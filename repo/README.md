@@ -34,7 +34,7 @@ Intelligence backend packages**:
   weights T7–T8, scoped feedback T9, self-scoped watchlists T10–T13.
 
 The endpoint-parity audit (`scripts/audit_endpoints.sh`) runs in strict
-mode and reports **forward parity 114/77 (100 %)** with 0 reverse orphans.
+mode and reports **forward parity 114/114 (100 %)** with 0 reverse orphans.
 Remaining work — the P-A/P-B/P-C frontend surfaces, P3 cross-domain
 integration, and the final P4/P5 hardening gate — is tracked in
 [`plan.md`](./plan.md).
@@ -264,9 +264,12 @@ Current-scope disclosures (updated as features land):
   and hands off to the P-B KPI experience later. The `Dockerfile.app`
   now has a real Trunk + wasm-bindgen stage that replaces the P0
   `dist-scaffold` shell.
-- All 77 REST endpoints are listed authoritatively in
-  `../docs/api-spec.md`. P1 delivers 40 of them (the shared-foundation
-  subset); P-A/P-B/P-C packages ship the remaining 37.
+- All **114** REST endpoints are listed authoritatively in
+  `../docs/api-spec.md` (49 P1 + 21 P-A + 31 P-B + 13 P-C, with the full
+  breakdown reproduced in the `## Totals` section). P1 shipped the 49
+  shared-foundation endpoints; P-A, P-B, and P-C now ship the remaining
+  65. The endpoint-parity audit runs in strict mode and reports
+  `114/114` forward parity with 0 reverse orphans.
 - No outbound integrations exist. TerraOps is an offline system by contract.
 - No `.env` / `.env.*` files are created or consumed by this repo. The
   Postgres bootstrap value in `docker-compose.yml` is a documented

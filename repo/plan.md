@@ -534,7 +534,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 
 ### P5 — Final Gate (main lane)
 
-- [x] Commit the audit strictness marker: `crates/backend/tests/.audit_strict` exists and `scripts/audit_endpoints.sh` reports forward parity **114/77 (100%)** with 0 reverse orphans (6b7b9fc).
+- [x] Commit the audit strictness marker: `crates/backend/tests/.audit_strict` exists and `scripts/audit_endpoints.sh` reports forward parity **114/114 (100%)** with 0 reverse orphans (6b7b9fc).
 - [ ] All 7 Playwright flows pass (flow gate).
 - [ ] `./run_tests.sh` exits 0 with Gate 1 ≥ 90%, Gate 2 ≥ 80%, Gate 3 strict-forward = 100% (enabled by the marker) and reverse = 100%, flow gate pass.
 - [ ] `docker compose up --build` clean cold boot from empty `terraops-runtime` volume with zero manual `export` steps; demo credentials for all five roles usable.
@@ -543,7 +543,7 @@ After fan-in, main lane merges, runs the integrated test matrix, resolves overla
 
 ## Definition Of Done (repo-local mirror)
 
-- [ ] All 77 endpoints in `docs/api-spec.md` implemented, auth-classified, and covered by a no-mock HTTP test discovered by `scripts/audit_endpoints.sh`.
+- [x] All 114 endpoints in `docs/api-spec.md` implemented, auth-classified, and covered by a no-mock HTTP test discovered by `scripts/audit_endpoints.sh`.
 - [ ] Every actor success path executable via the real UI.
 - [ ] `docker compose up --build` cold-boots with no `.env` and no hardcoded secrets.
 - [ ] `./run_tests.sh` exits 0 with all four gates green.
