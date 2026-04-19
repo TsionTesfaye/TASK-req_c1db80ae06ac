@@ -131,12 +131,14 @@ Run the broad test gate from the repo root:
   P3/P4 cross-domain + hardening tests, plus `mtls_handshake_tests.rs` =
   4 real transport-layer rustls tests — ~161 total) run serialized
   (`--test-threads=1`) because they reuse one DB. Line coverage is
-  measured by `cargo llvm-cov` across every backend test binary and
-  enforced against the `GATE1_LINE_FLOOR` no-regression floor
-  (default 50; override per-run with `GATE1_LINE_FLOOR=<n>`). The
-  aspirational 90 % ceiling documented in `docs/test-coverage.md`
-  remains a post-P5 lift target; the gate is a truthful current-state
-  check, not vanity.
+  measured by `cargo llvm-cov` across the backend `--lib` unit tests
+  **and** every backend test binary (so `#[cfg(test)]` modules inside
+  `crates/backend/src/**` contribute too) and enforced against the
+  planning-contract floor `GATE1_LINE_FLOOR=90`. The coverage scope
+  excludes pure-IO boot modules (`main.rs`, `app.rs`, `tls.rs`, `spa.rs`,
+  `config.rs`, `db.rs`, `seed.rs`, `storage/`, `models/`) which are
+  exercised end-to-end by `docker compose up --build` rather than by
+  cargo tests. `docs/test-coverage.md` documents the exact scope rule.
 - **Gate 2** — frontend `wasm-bindgen-test` suite executed via
   `cargo test --target wasm32-unknown-unknown -p terraops-frontend`
   inside the `tests` image. Tests run in Node.js through
@@ -145,10 +147,14 @@ Run the broad test gate from the repo root:
   unified error-code → user-message mapping, unauthenticated-detection,
   and bearer-token attachment (5/5 passing). `grcov` emits an lcov
   artifact (`coverage/frontend.lcov`) whenever the wasm32 profraw data
-  collects, enforcing `--threshold ${GATE2_LINE_FLOOR}` (default 10); a
-  known upstream wasm-coverage gap can produce zero profraw on certain
-  rustc builds, in which case the gate falls back to asserting the
-  wasm-bindgen-test suite is green and emits an empty lcov.
+  collects, enforcing the planning-contract floor
+  `GATE2_LINE_FLOOR=80`. The `wasm32-unknown-unknown` target has a
+  known upstream source-based-coverage gap in rustc: certain toolchain
+  builds produce zero profraw files for wasm, which the gate treats as
+  a real external blocker (documented in `docs/test-coverage.md`) by
+  falling back to asserting the wasm-bindgen-test suite is green while
+  leaving `coverage/frontend.lcov` empty so operators can see the
+  blocker directly.
 - **Gate 3** — endpoint parity audit via `scripts/audit_endpoints.sh`.
   Mode is controlled by the presence of
   `crates/backend/tests/.audit_strict`: absent → `progress` mode

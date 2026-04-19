@@ -113,3 +113,55 @@ pub fn render(title: &str, rows: &[Value], output_path: &Path) -> AppResult<()> 
         .map_err(|e| crate::errors::AppError::Internal(format!("pdf save: {}", e)))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use serde_json::json;
+
+    fn tmpfile(n: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("terraops-pdf-{}-{}.pdf", n, std::process::id()));
+        p
+    }
+
+    #[test]
+    fn empty_rows_renders() {
+        let p = tmpfile("empty");
+        render("Empty Report", &[], &p).unwrap();
+        let md = std::fs::metadata(&p).unwrap();
+        assert!(md.len() > 100);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn with_rows_renders() {
+        let rows: Vec<_> = (0..3)
+            .map(|i| json!({"id": i, "name": format!("row-{}", i), "flag": true}))
+            .collect();
+        let p = tmpfile("rows");
+        render("Rep", &rows, &p).unwrap();
+        let md = std::fs::metadata(&p).unwrap();
+        assert!(md.len() > 200);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn many_rows_trigger_truncation_line() {
+        let rows: Vec<_> = (0..50)
+            .map(|i| json!({"id": i, "name": format!("r{}", i)}))
+            .collect();
+        let p = tmpfile("trunc");
+        render("Big", &rows, &p).unwrap();
+        let md = std::fs::metadata(&p).unwrap();
+        assert!(md.len() > 300);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn bad_path_errors() {
+        let p = std::path::PathBuf::from("/no/such/dir/xx.pdf");
+        let err = render("T", &[], &p);
+        assert!(err.is_err());
+    }
+}

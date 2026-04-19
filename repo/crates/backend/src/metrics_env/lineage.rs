@@ -65,7 +65,7 @@ pub async fn get(pool: &PgPool, computation_id: Uuid) -> AppResult<ComputationLi
 /// Parse the `inputs` JSONB array stored in `metric_computations`.
 /// Each element is expected to be:
 /// `{"observation_id": "...", "observed_at": "...", "value": ...}`
-fn parse_inputs(inputs: &Value) -> Vec<LineageObservation> {
+pub(crate) fn parse_inputs(inputs: &Value) -> Vec<LineageObservation> {
     let arr = match inputs.as_array() {
         Some(a) => a,
         None => return Vec::new(),
@@ -85,4 +85,47 @@ fn parse_inputs(inputs: &Value) -> Vec<LineageObservation> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_inputs;
+    use serde_json::json;
+
+    #[test]
+    fn empty_non_array_returns_empty() {
+        assert!(parse_inputs(&json!({})).is_empty());
+        assert!(parse_inputs(&json!(null)).is_empty());
+        assert!(parse_inputs(&json!("nope")).is_empty());
+    }
+
+    #[test]
+    fn empty_array_returns_empty() {
+        assert!(parse_inputs(&json!([])).is_empty());
+    }
+
+    #[test]
+    fn valid_single_entry() {
+        let v = json!([{
+            "observation_id": "11111111-2222-3333-4444-555555555555",
+            "observed_at": "2025-01-01T00:00:00Z",
+            "value": 3.14
+        }]);
+        let out = parse_inputs(&v);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].value, 3.14);
+    }
+
+    #[test]
+    fn skips_bad_entries() {
+        let v = json!([
+            {"observation_id":"not-a-uuid","observed_at":"2025-01-01T00:00:00Z","value":1.0},
+            {"observation_id":"11111111-2222-3333-4444-555555555555","observed_at":"bogus","value":1.0},
+            {"observation_id":"11111111-2222-3333-4444-555555555555","observed_at":"2025-01-01T00:00:00Z"},
+            {"observation_id":"11111111-2222-3333-4444-555555555555","observed_at":"2025-01-01T00:00:00Z","value":2.5}
+        ]);
+        let out = parse_inputs(&v);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].value, 2.5);
+    }
 }

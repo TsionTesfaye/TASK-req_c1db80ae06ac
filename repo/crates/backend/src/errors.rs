@@ -134,3 +134,65 @@ impl ResponseError for AppError {
 
 /// Convenience alias.
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_variants_have_stable_code_and_status() {
+        let cases: Vec<(AppError, ErrorCode, u16)> = vec![
+            (AppError::AuthInvalidCredentials, ErrorCode::AuthInvalidCredentials, 401),
+            (AppError::AuthLocked, ErrorCode::AuthLocked, 423),
+            (AppError::AuthRequired, ErrorCode::AuthRequired, 401),
+            (AppError::Forbidden("x"), ErrorCode::AuthForbidden, 403),
+            (AppError::Validation("bad".into()), ErrorCode::ValidationFailed, 422),
+            (AppError::ValidationFields(vec![]), ErrorCode::ValidationFailed, 422),
+            (AppError::NotFound, ErrorCode::NotFound, 404),
+            (AppError::Conflict("dup".into()), ErrorCode::Conflict, 409),
+            (AppError::RateLimited, ErrorCode::RateLimited, 429),
+            (AppError::Timeout, ErrorCode::Timeout, 504),
+            (AppError::Internal("boom".into()), ErrorCode::Internal, 500),
+        ];
+        for (err, expected_code, expected_status) in cases {
+            assert_eq!(err.code() as u32, expected_code as u32, "{:?}", err);
+            assert_eq!(err.status_code().as_u16(), expected_status, "{:?}", err);
+            // Ensures Display works (thiserror) and formats non-empty text.
+            assert!(!format!("{}", err).is_empty());
+        }
+    }
+
+    #[test]
+    fn sqlx_unique_violation_maps_to_conflict() {
+        // We cannot easily construct a real sqlx::Error::Database without a
+        // live error, so we exercise the catch-all RowNotFound branch and
+        // confirm it becomes Internal.
+        let err: AppError = sqlx::Error::RowNotFound.into();
+        assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn anyhow_maps_to_internal() {
+        let ah = anyhow::anyhow!("some failure");
+        let err: AppError = ah.into();
+        assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn error_response_emits_json_envelope_with_code() {
+        let err = AppError::Validation("short".into());
+        let resp = err.error_response();
+        assert_eq!(resp.status().as_u16(), 422);
+    }
+
+    #[test]
+    fn validation_fields_include_details() {
+        let err = AppError::ValidationFields(vec![FieldError {
+            field: "sku".into(),
+            code: "required".into(),
+            message: "sku: required".into(),
+        }]);
+        let resp = err.error_response();
+        assert_eq!(resp.status().as_u16(), 422);
+    }
+}

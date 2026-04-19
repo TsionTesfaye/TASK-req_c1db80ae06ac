@@ -113,3 +113,169 @@ pub fn to_product_fields(raw: &Value) -> (String, String, bool, i32, String) {
 
     (sku, name, on_shelf, price_cents, currency)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn valid_full_row() {
+        let r = json!({"sku":"A1","name":"Widget","price_cents":1299,"currency":"USD","on_shelf":true});
+        assert!(validate_row(&r).is_empty());
+    }
+
+    #[test]
+    fn valid_minimal_row() {
+        let r = json!({"sku":"B","name":"N"});
+        assert!(validate_row(&r).is_empty());
+    }
+
+    #[test]
+    fn missing_sku_errors() {
+        let r = json!({"name":"Widget"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("sku: required")));
+    }
+
+    #[test]
+    fn blank_sku_errors() {
+        let r = json!({"sku":"   ","name":"Widget"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("sku: must not be blank")));
+    }
+
+    #[test]
+    fn missing_name_errors() {
+        let r = json!({"sku":"A1"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("name: required")));
+    }
+
+    #[test]
+    fn blank_name_errors() {
+        let r = json!({"sku":"A1","name":""});
+        assert!(validate_row(&r).iter().any(|e| e.contains("name: required")
+            || e.contains("name: must not be blank")));
+    }
+
+    #[test]
+    fn negative_price_errors() {
+        let r = json!({"sku":"A","name":"n","price_cents":-1});
+        assert!(validate_row(&r).iter().any(|e| e.contains("price_cents")));
+    }
+
+    #[test]
+    fn price_string_ok_when_parseable() {
+        let r = json!({"sku":"A","name":"n","price_cents":"42"});
+        assert!(validate_row(&r).is_empty());
+    }
+
+    #[test]
+    fn price_unparseable_errors() {
+        let r = json!({"sku":"A","name":"n","price_cents":"abc"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("price_cents")));
+    }
+
+    #[test]
+    fn price_bool_errors() {
+        let r = json!({"sku":"A","name":"n","price_cents":true});
+        assert!(validate_row(&r).iter().any(|e| e.contains("price_cents")));
+    }
+
+    #[test]
+    fn currency_wrong_length_errors() {
+        let r = json!({"sku":"A","name":"n","currency":"USDX"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("currency")));
+    }
+
+    #[test]
+    fn currency_non_alpha_errors() {
+        let r = json!({"sku":"A","name":"n","currency":"US1"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("currency")));
+    }
+
+    #[test]
+    fn currency_empty_is_ok() {
+        let r = json!({"sku":"A","name":"n","currency":""});
+        assert!(validate_row(&r).is_empty());
+    }
+
+    #[test]
+    fn on_shelf_bool_ok() {
+        let r = json!({"sku":"A","name":"n","on_shelf":false});
+        assert!(validate_row(&r).is_empty());
+    }
+
+    #[test]
+    fn on_shelf_string_truthy_ok() {
+        for v in ["true","false","1","0","yes","no"] {
+            let r = json!({"sku":"A","name":"n","on_shelf":v});
+            assert!(validate_row(&r).is_empty(), "value {v}");
+        }
+    }
+
+    #[test]
+    fn on_shelf_bad_string_errors() {
+        let r = json!({"sku":"A","name":"n","on_shelf":"maybe"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("on_shelf")));
+    }
+
+    #[test]
+    fn on_shelf_number_errors() {
+        let r = json!({"sku":"A","name":"n","on_shelf":42});
+        assert!(validate_row(&r).iter().any(|e| e.contains("on_shelf")));
+    }
+
+    #[test]
+    fn to_fields_defaults() {
+        let r = json!({"sku":"  x ","name":" Y  "});
+        let (sku, name, on_shelf, price, cur) = to_product_fields(&r);
+        assert_eq!(sku, "x");
+        assert_eq!(name, "Y");
+        assert!(on_shelf); // default true
+        assert_eq!(price, 0);
+        assert_eq!(cur, "USD");
+    }
+
+    #[test]
+    fn to_fields_string_on_shelf_false() {
+        let r = json!({"sku":"a","name":"b","on_shelf":"false"});
+        let (_, _, on_shelf, _, _) = to_product_fields(&r);
+        assert!(!on_shelf);
+    }
+
+    #[test]
+    fn to_fields_string_on_shelf_true_variants() {
+        for v in ["true","1","yes","YES","True"] {
+            let r = json!({"sku":"a","name":"b","on_shelf":v});
+            let (_, _, on_shelf, _, _) = to_product_fields(&r);
+            assert!(on_shelf, "value {v}");
+        }
+    }
+
+    #[test]
+    fn to_fields_price_from_string() {
+        let r = json!({"sku":"a","name":"b","price_cents":"99"});
+        let (_, _, _, price, _) = to_product_fields(&r);
+        assert_eq!(price, 99);
+    }
+
+    #[test]
+    fn to_fields_price_garbage_is_zero() {
+        let r = json!({"sku":"a","name":"b","price_cents":"abc"});
+        let (_, _, _, price, _) = to_product_fields(&r);
+        assert_eq!(price, 0);
+    }
+
+    #[test]
+    fn to_fields_currency_normalization() {
+        let r = json!({"sku":"a","name":"b","currency":" eur "});
+        let (_, _, _, _, cur) = to_product_fields(&r);
+        assert_eq!(cur, "EUR");
+    }
+
+    #[test]
+    fn to_fields_currency_bad_falls_back_usd() {
+        let r = json!({"sku":"a","name":"b","currency":"EUROS"});
+        let (_, _, _, _, cur) = to_product_fields(&r);
+        assert_eq!(cur, "USD");
+    }
+}

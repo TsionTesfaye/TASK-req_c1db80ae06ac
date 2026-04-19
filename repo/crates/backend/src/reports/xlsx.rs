@@ -82,3 +82,54 @@ pub fn render(title: &str, rows: &[Value], output_path: &Path) -> AppResult<()> 
         .map_err(|e| crate::errors::AppError::Internal(format!("xlsx save: {}", e)))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use serde_json::json;
+
+    fn tmpfile(n: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("terraops-xlsx-{}-{}.xlsx", n, std::process::id()));
+        p
+    }
+
+    #[test]
+    fn empty_rows_saves_empty_workbook() {
+        let p = tmpfile("empty");
+        render("Report", &[], &p).unwrap();
+        assert!(p.exists());
+        let md = std::fs::metadata(&p).unwrap();
+        assert!(md.len() > 0);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn writes_numbers_bools_strings() {
+        let rows = vec![
+            json!({"n": 42, "b": true, "s": "hi", "x": null}),
+            json!({"n": 3.14, "b": false, "s": "there"}),
+        ];
+        let p = tmpfile("mixed");
+        render("My Rep", &rows, &p).unwrap();
+        let md = std::fs::metadata(&p).unwrap();
+        assert!(md.len() > 100);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invalid_sheet_name_errors() {
+        // Sheet names longer than 31 chars fail set_name.
+        let long = "x".repeat(200);
+        let p = tmpfile("badname");
+        let err = render(&long, &[json!({"a":1})], &p);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn bad_path_errors() {
+        let p = std::path::PathBuf::from("/no/such/dir/xx.xlsx");
+        let err = render("T", &[json!({"a":1})], &p);
+        assert!(err.is_err());
+    }
+}
