@@ -159,6 +159,11 @@ async fn get_job(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
+    // Audit #9 issue 5: require the intended `report.run` permission in
+    // addition to owner match so an owner who has lost the capability
+    // (role revoked after creation) cannot still read/run/cancel the job
+    // via the self-service path.
+    require_permission(&user.0, "report.run")?;
     let job = fetch_job(&state, path.into_inner()).await?;
     OwnerGuard::allow_self(&user.0, job.owner_id)?;
     Ok(HttpResponse::Ok().json(ReportJobDto::from(job)))
@@ -172,6 +177,8 @@ async fn run_now(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
+    // Audit #9 issue 5: require `report.run` alongside owner match.
+    require_permission(&user.0, "report.run")?;
     let id = path.into_inner();
     let job = fetch_job(&state, id).await?;
     OwnerGuard::allow_self(&user.0, job.owner_id)?;
@@ -202,6 +209,8 @@ async fn cancel_job(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
+    // Audit #9 issue 5: require `report.run` alongside owner match.
+    require_permission(&user.0, "report.run")?;
     let id = path.into_inner();
     let job = fetch_job(&state, id).await?;
     OwnerGuard::allow_self(&user.0, job.owner_id)?;
@@ -226,6 +235,10 @@ async fn get_artifact(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
+    // Audit #9 issue 5: require `report.run` alongside owner match for
+    // artifact download so revoked-role owners cannot re-download their
+    // own historical artifact.
+    require_permission(&user.0, "report.run")?;
     let id = path.into_inner();
     let job = fetch_job(&state, id).await?;
     OwnerGuard::allow_self(&user.0, job.owner_id)?;

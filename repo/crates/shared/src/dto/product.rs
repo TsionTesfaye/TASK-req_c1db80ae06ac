@@ -88,23 +88,81 @@ pub struct CreateProductRequest {
     pub currency: Option<String>,
 }
 
+/// PATCH body for products.
+///
+/// Optional master-data pointers (`spu`, `barcode`, `shelf_life_days`,
+/// `description`, `category_id`, `brand_id`, `unit_id`, `site_id`,
+/// `department_id`) use tri-state semantics so the analyst can reassign
+/// **or clear** the pointer in a PATCH:
+///   * field omitted  → `None`            → leave as-is
+///   * `"field": null`→ `Some(None)`      → clear to NULL
+///   * `"field": v`   → `Some(Some(v))`   → set to `v`
+///
+/// Scalar fields (`sku`, `name`, `price_cents`, `currency`) remain plain
+/// `Option<T>` because clearing them is not a valid operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UpdateProductRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sku: Option<String>,
-    #[serde(default)]
-    pub spu: Option<String>,
-    #[serde(default)]
-    pub barcode: Option<String>,
-    #[serde(default)]
-    pub shelf_life_days: Option<i32>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spu: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub barcode: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shelf_life_days: Option<Option<i32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub description: Option<String>,
-    pub category_id: Option<Uuid>,
-    pub brand_id: Option<Uuid>,
-    pub unit_id: Option<Uuid>,
-    pub site_id: Option<Uuid>,
-    pub department_id: Option<Uuid>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub category_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub brand_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unit_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub site_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub department_id: Option<Option<Uuid>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cents: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
 }
 

@@ -281,15 +281,19 @@ accounts automatically on first boot (see `Dockerfile.app` CMD). You
 can also force re-seed any time with `./init_db.sh` or
 `docker compose exec app terraops-backend seed`.
 
-Demo accounts (all passwords `TerraOps!2026`):
+Demo accounts (all passwords `TerraOps!2026`). **Sign-in is
+username-first**: the login form, `/api/v1/auth/login`, and the audit
+log all key off `username`, not email. The email column is still
+populated (encrypted at rest) for notifications, but logging in with an
+email address is not a supported path.
 
-| Role           | Email                      |
-| -------------- | -------------------------- |
-| Administrator  | admin@terraops.local       |
-| Data Steward   | steward@terraops.local     |
-| Analyst        | analyst@terraops.local     |
-| Recruiter      | recruiter@terraops.local   |
-| Regular User   | user@terraops.local        |
+| Role           | Username    | Email (notifications only) |
+| -------------- | ----------- | -------------------------- |
+| Administrator  | `admin`     | admin@terraops.local       |
+| Data Steward   | `steward`   | steward@terraops.local     |
+| Analyst        | `analyst`   | analyst@terraops.local     |
+| Recruiter      | `recruiter` | recruiter@terraops.local   |
+| Regular User   | `user`      | user@terraops.local        |
 
 ## Roles And Workflows
 
@@ -381,17 +385,21 @@ Current-scope disclosures (updated as features land):
 - `scripts/seed_demo.sh` now invokes `terraops-backend seed`, which is
   idempotent and creates/updates the five demo users with the role
   matrix above. Running it repeatedly preserves operator-set passwords.
-- **Frontend SPA status:** P1 complete. The Yew SPA ships a real
-  router, auth/toast/notifications context providers, permission-aware
-  nav, a typed `ApiClient` with hard 3 s timeout + single-GET retry +
-  unified error mapping (`wasm-bindgen-test` coverage for the timeout
-  race and error mapping), and real pages for login, change-password,
-  admin (users, allowlist, retention, mTLS, audit), monitoring
-  (latency, errors, crashes), and the notifications center. The
-  minimal `dashboard::Home` placeholder shows identity + permissions
-  and hands off to the P-B KPI experience later. The `Dockerfile.app`
-  now has a real Trunk + wasm-bindgen stage that replaces the P0
-  `dist-scaffold` shell.
+- **Frontend SPA status:** P1 + P-A/B/C complete and live in `dist/`.
+  The Yew SPA ships a real router, auth/toast/notifications context
+  providers, permission-aware nav, a typed `ApiClient` with hard 3 s
+  timeout + single-GET retry + unified error mapping
+  (`wasm-bindgen-test` coverage for the timeout race and error
+  mapping), and real pages for login, change-password, admin (users,
+  allowlist, retention, mTLS, audit), monitoring (latency, errors,
+  crashes), the notifications center, the data-steward catalog +
+  imports surfaces, and the analyst KPI / metrics / alerts / reports
+  / talent workbench. The `dashboard::Home` surface renders the live
+  `kpi_summary` — cycle-time average, funnel conversion, 24h anomaly
+  count, efficiency index — for any user holding `kpi.read`, with a
+  permission-gated fallback card for users without it. The
+  `Dockerfile.app` ships the real Trunk + wasm-bindgen stage that
+  replaces the P0 `dist-scaffold` shell.
 - All **114** REST endpoints are listed authoritatively in
   `docs/api-spec.md` (49 P1 + 21 P-A + 31 P-B + 13 P-C, with the full
   breakdown reproduced in the `## Totals` section). P1 shipped the 49
@@ -545,4 +553,37 @@ findings:
   (`README.md`, `plan.md`, `scripts/audit_endpoints.sh`,
   `crates/frontend/src/api.rs`) now points at the in-repo `docs/...`
   paths instead of `../docs/...`.
+- **Recruiter role workflow — extended attributes + sort (Medium).**
+  `GET /api/v1/talent/roles` now filters on `required_major`,
+  `min_education` (ordinal whitelist), and `required_availability`,
+  and sorts by a whitelisted `sort_by` column (`created_at` |
+  `opened_at` | `title` | `min_years` | `status`) in a whitelisted
+  `sort_dir` (`asc` | `desc`). The SPA search card exposes matching
+  inputs and sort selectors, and the recruiter create-role card
+  accepts `required_major`, `min_education`, `required_availability`
+  on submit. Unknown values are rejected server-side with a
+  user-safe 400.
+  (`crates/backend/src/talent/roles_open.rs`,
+  `crates/backend/src/talent/handlers.rs`,
+  `crates/frontend/src/api.rs`,
+  `crates/frontend/src/pages.rs`.)
+- **Crash-report ingest guards (Medium).** `POST
+  /api/v1/monitoring/crash-report` now enforces field-level size
+  limits (page ≤ 2 KiB, agent ≤ 1 KiB, stack ≤ 64 KiB truncated,
+  payload ≤ 128 KiB rejected) and runs a redaction sweep for
+  well-known secret-shaped substrings (`Authorization: Bearer`,
+  bare bearer tokens, `password=`/`api_key=`/`token=` fragments,
+  JWT-shaped triples, email addresses) on both the stack string and
+  every string leaf inside the payload JSON. The contract is
+  documented at the module header, and five unit tests pin the
+  redaction rules.
+  (`crates/backend/src/handlers/monitoring.rs`.)
+- **Username-first sign-in contract (Low).** Docs and inline
+  module comments now consistently describe sign-in as
+  username-first. The README demo-accounts table adds an explicit
+  `Username` column and states that login keys off `username`, not
+  email. `crates/backend/src/handlers/auth.rs` A1 docstring
+  corrected from "email + password" to "username + password".
+  `crates/backend/src/crypto/email.rs` clarifies that the email
+  hash is used for admin lookup/uniqueness, not for login.
 

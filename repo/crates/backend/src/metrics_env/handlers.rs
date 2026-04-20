@@ -101,14 +101,17 @@ async fn update_source(
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "metric.configure")?;
     let b = body.into_inner();
+    // Audit #9 issue 1: PATCH must honor true tri-state reassignment and
+    // clearing of site/department/unit pointers; previously the handler
+    // dropped these fields on the floor.
     let dto = sources::update(
         &state.pool,
         path.into_inner(),
         b.name.as_deref(),
         b.kind.as_deref(),
-        None, // field-level site_id update omitted for brevity; same as PATCh via name/kind
-        None,
-        None,
+        b.site_id,
+        b.department_id,
+        b.unit_id,
     )
     .await?;
     Ok(HttpResponse::Ok().json(dto))

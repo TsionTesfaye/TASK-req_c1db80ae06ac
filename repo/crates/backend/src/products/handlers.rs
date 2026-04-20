@@ -135,6 +135,14 @@ async fn create_product(
             return Err(AppError::Validation("shelf_life_days must be >= 0".into()));
         }
     }
+    // Audit #9 issue 3: validate price_cents >= 0 in the handler so we
+    // return a user-safe 422 rather than leaking the DB CHECK-constraint
+    // failure as a generic 500.
+    if let Some(p) = req.price_cents {
+        if p < 0 {
+            return Err(AppError::Validation("price_cents must be >= 0".into()));
+        }
+    }
 
     let product_id = repo::insert_product(
         &state.pool,
@@ -206,32 +214,47 @@ async fn update_product(
     let before = repo::product_snapshot(&state.pool, id).await?;
     let req = body.into_inner();
 
-    if let Some(n) = req.shelf_life_days {
+    // Audit #9 issue 3: shelf_life_days / price_cents are validated in the
+    // handler so negative values return a user-safe 422 instead of a
+    // generic 500 from the DB CHECK.
+    if let Some(Some(n)) = req.shelf_life_days {
         if n < 0 {
             return Err(AppError::Validation("shelf_life_days must be >= 0".into()));
         }
     }
+    if let Some(p) = req.price_cents {
+        if p < 0 {
+            return Err(AppError::Validation("price_cents must be >= 0".into()));
+        }
+    }
+
+    // Audit #9 issue 2: tri-state PATCH semantics for optional master-data
+    // fields. For string-valued fields, an incoming `""` is treated as a
+    // clear (same normalization as create) to avoid accidental empty
+    // strings; explicit `null` also clears.
+    let norm_str = |s: &String| -> Option<String> {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t.to_string()) }
+    };
+    let spu_arg: Option<Option<String>> = req.spu.map(|v| v.and_then(|s| norm_str(&s)));
+    let barcode_arg: Option<Option<String>> = req.barcode.map(|v| v.and_then(|s| norm_str(&s)));
+    let description_arg: Option<Option<String>> =
+        req.description.map(|v| v.and_then(|s| norm_str(&s)));
 
     let updated = repo::update_product_fields(
         &state.pool,
         id,
         req.sku.as_deref(),
-        req.spu.as_ref().map(|s| {
-            let t = s.trim();
-            if t.is_empty() { None } else { Some(t) }
-        }),
-        req.barcode.as_ref().map(|s| {
-            let t = s.trim();
-            if t.is_empty() { None } else { Some(t) }
-        }),
-        req.shelf_life_days.map(Some),
+        spu_arg.as_ref().map(|v| v.as_deref()),
+        barcode_arg.as_ref().map(|v| v.as_deref()),
+        req.shelf_life_days,
         req.name.as_deref(),
-        req.description.as_ref().map(|s| Some(s.as_str())),
-        req.category_id.map(Some),
-        req.brand_id.map(Some),
-        req.unit_id.map(Some),
-        req.site_id.map(Some),
-        req.department_id.map(Some),
+        description_arg.as_ref().map(|v| v.as_deref()),
+        req.category_id,
+        req.brand_id,
+        req.unit_id,
+        req.site_id,
+        req.department_id,
         req.price_cents,
         req.currency.as_deref(),
         user.0.user_id,

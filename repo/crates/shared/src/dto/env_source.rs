@@ -29,13 +29,39 @@ pub struct CreateEnvSourceRequest {
     pub unit_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// PATCH body for env sources.
+///
+/// `site_id`, `department_id`, and `unit_id` use tri-state semantics so the
+/// analyst can reassign **or clear** master-data pointers:
+///   * field omitted  → `None`            → leave as-is
+///   * `"field": null`→ `Some(None)`      → clear to NULL
+///   * `"field": id`  → `Some(Some(id))`  → set to `id`
+///
+/// See `crate::tristate::double_option` for the serde glue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UpdateEnvSourceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    pub site_id: Option<Uuid>,
-    pub department_id: Option<Uuid>,
-    pub unit_id: Option<Uuid>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub site_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub department_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::tristate::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unit_id: Option<Option<Uuid>>,
 }
 
 // ---------------------------------------------------------------------------

@@ -9,5 +9,6 @@ pub mod pagination;
 pub mod permissions;
 pub mod roles;
 pub mod time;
+pub mod tristate;
 
 pub mod dto;

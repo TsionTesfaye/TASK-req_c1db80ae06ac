@@ -2,28 +2,32 @@
 #
 # TerraOps test runner image.
 #
-# Scope (P1 truthful):
+# Scope (current delivered state — all four gates active):
 #   * Gate 1 — `cargo test -p terraops-backend -p terraops-shared`
-#     (real no-mock HTTP suite against real Postgres).
-#   * Gate 2 — `cargo test --target wasm32-unknown-unknown -p terraops-frontend`
-#     via `wasm-bindgen-test-runner` in Node mode. This image therefore
+#     (real no-mock HTTP suite against real Postgres) driven by
+#     `cargo-llvm-cov` with the line-coverage floor in `run_tests.sh`.
+#   * Gate 2 — Frontend Verification Matrix (FVM): the
+#     `wasm-bindgen-test` Node-mode suite for `terraops-frontend` plus
+#     `scripts/frontend_verify.sh` evidence audit. This image therefore
 #     includes the `wasm32-unknown-unknown` target, `wasm-bindgen-cli`
 #     (matched to the crate's `wasm-bindgen` version), and a system
 #     Node.js runtime.
 #   * Gate 3 — `scripts/audit_endpoints.sh` (pure bash + awk).
+#   * Flow gate — Playwright specs under `e2e/specs/` run against the
+#     live `app` service on the compose network. The pinned Chromium
+#     + Playwright browser payload and the pre-staged
+#     `/opt/e2e/node_modules` are baked into this image so the flow
+#     gate does not depend on a first-use network download.
 #
-# Explicitly deferred (honestly, not silently):
+# Design notes:
 #   * Wasm source-based line coverage was evaluated and rejected as the
 #     authoritative frontend proof on this toolchain (stable rust 1.88
 #     `wasm32-unknown-unknown` sysroot ships no `profiler_builtins`; see
 #     `docs/test-coverage.md §Why the frontend is not measured by wasm
-#     source-based line coverage`). Gate 2 is therefore the Frontend
-#     Verification Matrix (FVM) — a requirement-row verification score,
-#     not a line-coverage percentage. grcov is retained in this image
-#     only as historical tooling; it is not used by the current gate.
-#   * Playwright flow gate. Pinned Chromium and Playwright browsers are
-#     activated when the first real spec lands in a later phase; see
-#     `run_tests.sh` for the clearly-labelled DEFERRED line.
+#     source-based line coverage`). Gate 2 is therefore the FVM — a
+#     requirement-row verification score, not a line-coverage
+#     percentage. `grcov` is retained only as historical tooling; it is
+#     not used by the current gate.
 
 FROM rust:1.88-bookworm
 
