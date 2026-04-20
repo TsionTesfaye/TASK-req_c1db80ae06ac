@@ -93,9 +93,18 @@ pub async fn retention_sweep_once(pool: &PgPool) -> AppResult<u64> {
             .execute(pool)
             .await?
             .rows_affected(),
+            // Audit #7 Issue #1: feedback retention is driven by 24
+            // months of *inactivity*, not the age of each feedback row.
+            // Delete feedback for candidates whose most recent feedback
+            // is older than the TTL window; touching a candidate inside
+            // the window preserves their entire feedback history.
             "feedback" => sqlx::query(
                 "DELETE FROM talent_feedback \
-                 WHERE created_at < NOW() - ($1::int || ' days')::interval",
+                 WHERE candidate_id IN ( \
+                     SELECT candidate_id FROM talent_feedback \
+                     GROUP BY candidate_id \
+                     HAVING MAX(created_at) < NOW() - ($1::int || ' days')::interval \
+                 )",
             )
             .bind(r.ttl_days)
             .execute(pool)

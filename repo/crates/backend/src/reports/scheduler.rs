@@ -136,6 +136,10 @@ pub async fn run_due_jobs(pool: &PgPool, runtime_dir: &PathBuf) -> AppResult<()>
 ///     natural time column (`computed_at`, `observed_at`, `fired_at`).
 ///   * `limit` — row cap (1..=1000, default 50).
 ///   * `source_id` — only for `env_series`.
+///   * `site_id` / `department_id` — only for `env_series`; filters
+///     through the source's site/department assignment, the prompt-
+///     required spatial slicing dimension for environmental exports
+///     (Audit #7 Issue #6).
 ///   * `definition_id` — only for `kpi_summary`.
 ///   * `severity` — only for `alert_digest` (one of `info|warning|critical`).
 ///
@@ -217,6 +221,8 @@ pub(crate) async fn build_report_data(
                 unit: String,
             }
             let source_id = parse_uuid("source_id");
+            let site_id = parse_uuid("site_id");
+            let department_id = parse_uuid("department_id");
             let rows: Vec<Row> = sqlx::query_as(
                 "SELECT es.name AS source_name, eo.value, eo.observed_at, eo.unit \
                  FROM env_observations eo \
@@ -224,11 +230,15 @@ pub(crate) async fn build_report_data(
                  WHERE ($1::TIMESTAMPTZ IS NULL OR eo.observed_at >= $1) \
                    AND ($2::TIMESTAMPTZ IS NULL OR eo.observed_at <= $2) \
                    AND ($3::UUID         IS NULL OR eo.source_id = $3) \
-                 ORDER BY eo.observed_at DESC LIMIT $4",
+                   AND ($4::UUID         IS NULL OR es.site_id = $4) \
+                   AND ($5::UUID         IS NULL OR es.department_id = $5) \
+                 ORDER BY eo.observed_at DESC LIMIT $6",
             )
             .bind(since)
             .bind(until)
             .bind(source_id)
+            .bind(site_id)
+            .bind(department_id)
             .bind(limit)
             .fetch_all(pool)
             .await
@@ -255,6 +265,14 @@ pub(crate) async fn build_report_data(
             let severity = parse_str("severity").filter(|s| {
                 ["info", "warning", "critical"].contains(&s.as_str())
             });
+            // Spatial slicing on `alert_digest` is intentionally *not*
+            // wired up: alert rules live on `metric_definitions`, which
+            // have no direct site/department column. Correlating alert
+            // events back to a site would require walking the definition
+            // inputs to their sources, which is expensive and ambiguous
+            // when a metric aggregates across multiple sources. The
+            // env-scoped spatial slicing lives on `env_series` where the
+            // join is direct and unambiguous (Audit #7 Issue #6 scope).
             let rows: Vec<Row> = sqlx::query_as(
                 "SELECT ar.severity, ae.value, ae.fired_at, ae.resolved_at \
                  FROM alert_events ae \

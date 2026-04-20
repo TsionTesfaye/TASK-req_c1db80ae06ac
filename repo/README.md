@@ -454,3 +454,55 @@ and `cargo check -p terraops-backend -p terraops-shared` are both clean
 backend change (`metric_computations.id` is now projected as
 `computation_id` on series points) preserves the 114/114 endpoint-parity
 audit.
+
+## Audit #7 Remediation — retention, history, offline cache, export slicing
+
+The `develop-1` remediation bundle closes six audit-#7 issues:
+
+- **Feedback retention by inactivity (High).** `talent_feedback`
+  retention is now driven by **24 months of inactivity** rather than by
+  each row's own `created_at`. Both the on-demand runner
+  (`crates/backend/src/handlers/retention.rs`) and the hourly sweep
+  (`crates/backend/src/jobs/mod.rs`) delete feedback only for candidates
+  whose most recent feedback is older than the TTL window — touching a
+  candidate inside the window preserves the full thread.
+- **Truthful bulk-import history (High).** Product import commits now
+  snapshot the pre-upsert row (`to_jsonb(p)`) when a SKU already
+  exists and record a real `update` entry with both `before_json` and
+  `after_json`. Fresh SKUs still record as `create` with `after_json`
+  only. The commit response body also reports both `inserted` and
+  `updated` counts.
+  (`crates/backend/src/products/import.rs`.)
+- **Tiered offline cache for static resources/images (High).** The SPA
+  ships a service worker at `/sw.js` with three cache tiers:
+  cache-first for the app shell (Yew wasm/js, CSS, favicon/logo),
+  stale-while-revalidate for images, and network-first for `/api/v1/*`
+  reads with a cached fallback on offline. The backend serves the
+  worker with `Service-Worker-Allowed: /` so it can control the whole
+  origin. Non-GET requests bypass the cache entirely.
+  (`crates/frontend/static/sw.js`, `crates/frontend/index.html`,
+  `crates/backend/src/spa.rs`.)
+- **Idempotent-read retry contract (Medium).** The SPA honors a single
+  retry on network error / timeout / 5xx for all safe GETs. This now
+  applies uniformly to paged helpers (`get_with_total` previously
+  skipped the retry loop, which drifted from the documented contract).
+  The backend request path remains side-effect-free on GETs and emits
+  the same error envelope on both the first call and a retry, so clients
+  can retry safely.
+  (`crates/frontend/src/api.rs`.)
+- **Timestamp display MM/DD/YYYY 12-hour (Medium).** Every timestamp in
+  the SPA now routes through `format_ts` / `format_ts_opt` / new
+  `format_date` (for daily rollup `NaiveDate` columns). The remaining
+  raw `%Y-%m-%d` and ISO `NaiveDate::to_string()` displays on the
+  dashboard and KPI drill tables have been swept.
+  (`crates/frontend/src/pages.rs`.)
+- **Report slicing/export scope (Medium).** `env_series` reports now
+  accept optional `site_id` and `department_id` filters in addition to
+  `source_id`, and the SPA Reports workspace exposes real site +
+  department selectors when the env-series kind is chosen. `alert_digest`
+  intentionally does not expose spatial slicing (alert rules reference
+  metric definitions which have no direct site/dept column, so a
+  correlated filter would be ambiguous across multi-source aggregations);
+  this boundary is documented in the scheduler module.
+  (`crates/backend/src/reports/scheduler.rs`,
+  `crates/frontend/src/pages.rs`.)

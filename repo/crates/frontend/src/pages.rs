@@ -47,6 +47,14 @@ pub(crate) fn format_ts_opt(dt: Option<chrono::DateTime<chrono::Utc>>) -> String
     dt.map(format_ts).unwrap_or_else(|| "—".into())
 }
 
+/// Format a `NaiveDate` (used for daily rollup rows) in the same MM/DD/YYYY
+/// tenant convention as `format_ts`. Audit #7 Issue #5: previously these
+/// cells rendered the ISO `YYYY-MM-DD` via `NaiveDate::to_string()`, which
+/// drifted from the required display format.
+pub(crate) fn format_date(d: chrono::NaiveDate) -> String {
+    d.format("%m/%d/%Y").to_string()
+}
+
 // ===========================================================================
 // auth::Login
 // ===========================================================================
@@ -357,7 +365,7 @@ pub mod dashboard {
                         </div>
                     </div>
                     <p class="tx-subtle tx-hint">
-                        { format!("As of {}", s.generated_at.format("%Y-%m-%d %H:%M UTC")) }
+                        { format!("As of {}", format_ts(s.generated_at)) }
                     </p>
                     <Link<Route> to={Route::Kpi} classes={classes!("tx-btn", "tx-btn--ghost")}>
                         { "Open KPI workspace" }
@@ -3342,7 +3350,7 @@ pub mod analyst {
                     AttrValue::from("Count"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
-                    html! { <span class="tx-mono">{ r.day.to_string() }</span> },
+                    html! { <span class="tx-mono">{ format_date(r.day) }</span> },
                     html! { <code class="tx-mono">{
                         r.site_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
                     }</code> },
@@ -3368,7 +3376,7 @@ pub mod analyst {
                     AttrValue::from("Count"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
-                    html! { <span class="tx-mono">{ r.day.to_string() }</span> },
+                    html! { <span class="tx-mono">{ format_date(r.day) }</span> },
                     html! { <code class="tx-mono">{
                         r.site_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
                     }</code> },
@@ -3393,7 +3401,7 @@ pub mod analyst {
                     AttrValue::from("Index"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
-                    html! { <span class="tx-mono">{ r.day.to_string() }</span> },
+                    html! { <span class="tx-mono">{ format_date(r.day) }</span> },
                     html! { <code class="tx-mono">{
                         r.site_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
                     }</code> },
@@ -3711,18 +3719,27 @@ pub mod analyst {
         let severity = use_state(String::new);
         let source_id = use_state(String::new);
         let definition_id = use_state(String::new);
+        // Audit #7 Issue #6: env_series now accepts site/department slicing.
+        let report_site_id = use_state(String::new);
+        let report_department_id = use_state(String::new);
         // Audit #6 Issue #2: selectors instead of UUID text entry.
         let env_sources = use_state(|| Vec::<EnvSourceDto>::new());
         let defs = use_state(|| Vec::<MetricDefinitionDto>::new());
+        let sites_list = use_state(|| Vec::<terraops_shared::dto::ref_data::SiteRef>::new());
+        let depts_list = use_state(|| Vec::<terraops_shared::dto::ref_data::DepartmentRef>::new());
         {
             let auth = auth.clone();
             let env_sources = env_sources.clone();
             let defs = defs.clone();
+            let sites_list = sites_list.clone();
+            let depts_list = depts_list.clone();
             use_effect_with((), move |_| {
                 let api = auth.api();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(v) = api.list_env_sources().await { env_sources.set(v); }
                     if let Ok(v) = api.list_metric_definitions().await { defs.set(v); }
+                    if let Ok(v) = api.list_sites().await { sites_list.set(v); }
+                    if let Ok(v) = api.list_departments().await { depts_list.set(v); }
                 });
                 || ()
             });
@@ -3775,6 +3792,8 @@ pub mod analyst {
             let severity = severity.clone();
             let source_id = source_id.clone();
             let definition_id = definition_id.clone();
+            let report_site_id = report_site_id.clone();
+            let report_department_id = report_department_id.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
                 let cron_val = {
@@ -3807,6 +3826,18 @@ pub mod analyst {
                         let s = (*source_id).trim().to_string();
                         if !s.is_empty() {
                             obj.insert("source_id".into(), serde_json::Value::String(s));
+                        }
+                        // Audit #7 Issue #6: site/department spatial slicing.
+                        let sid = (*report_site_id).trim().to_string();
+                        if !sid.is_empty() {
+                            obj.insert("site_id".into(), serde_json::Value::String(sid));
+                        }
+                        let did = (*report_department_id).trim().to_string();
+                        if !did.is_empty() {
+                            obj.insert(
+                                "department_id".into(),
+                                serde_json::Value::String(did),
+                            );
                         }
                     }
                     "kpi_summary" => {
@@ -3896,20 +3927,56 @@ pub mod analyst {
                     </select>
                 </label>
             },
-            "env_series" => html! {
-                <label class="tx-field">
-                    <span>{ "Environmental source" }</span>
-                    <select class="tx-input" onchange={bind_str(source_id.clone())}>
-                        <option value="" selected={(*source_id).is_empty()}>{ "— any source —" }</option>
-                        { for env_sources.iter().map(|s| {
-                            let id_s = s.id.to_string();
-                            let sel = *source_id == id_s;
-                            html! { <option value={id_s.clone()} selected={sel}>
-                                { format!("{} ({})", s.name, s.kind) }
-                            </option> }
-                        }) }
-                    </select>
-                </label>
+            "env_series" => {
+                let site_sel = (*report_site_id).clone();
+                let dept_sel = (*report_department_id).clone();
+                let depts_filtered: Vec<&terraops_shared::dto::ref_data::DepartmentRef> = depts_list
+                    .iter()
+                    .filter(|d| site_sel.is_empty() || d.site_id.to_string() == site_sel)
+                    .collect();
+                html! {
+                    <>
+                        <label class="tx-field">
+                            <span>{ "Environmental source" }</span>
+                            <select class="tx-input" onchange={bind_str(source_id.clone())}>
+                                <option value="" selected={(*source_id).is_empty()}>{ "— any source —" }</option>
+                                { for env_sources.iter().map(|s| {
+                                    let id_s = s.id.to_string();
+                                    let sel = *source_id == id_s;
+                                    html! { <option value={id_s.clone()} selected={sel}>
+                                        { format!("{} ({})", s.name, s.kind) }
+                                    </option> }
+                                }) }
+                            </select>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "Site" }</span>
+                            <select class="tx-input" onchange={bind_str(report_site_id.clone())}>
+                                <option value="" selected={site_sel.is_empty()}>{ "— any site —" }</option>
+                                { for sites_list.iter().map(|s| {
+                                    let id_s = s.id.to_string();
+                                    let sel = site_sel == id_s;
+                                    html! { <option value={id_s.clone()} selected={sel}>
+                                        { s.name.clone() }
+                                    </option> }
+                                }) }
+                            </select>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "Department" }</span>
+                            <select class="tx-input" onchange={bind_str(report_department_id.clone())}>
+                                <option value="" selected={dept_sel.is_empty()}>{ "— any dept —" }</option>
+                                { for depts_filtered.iter().map(|d| {
+                                    let id_s = d.id.to_string();
+                                    let sel = dept_sel == id_s;
+                                    html! { <option value={id_s.clone()} selected={sel}>
+                                        { d.name.clone() }
+                                    </option> }
+                                }) }
+                            </select>
+                        </label>
+                    </>
+                }
             },
             "kpi_summary" => html! {
                 <label class="tx-field">

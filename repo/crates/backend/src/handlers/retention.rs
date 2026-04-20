@@ -96,7 +96,13 @@ async fn patch_retention(
 /// Enforce a retention policy. Deletion targets per design §Retention:
 ///   env_raw  → `env_observations` (observed_at < NOW() - ttl days)
 ///   kpi      → `kpi_rollup_daily` (day < CURRENT_DATE - ttl days)
-///   feedback → `talent_feedback`  (created_at < NOW() - ttl days)
+///   feedback → `talent_feedback`  (candidates with *no feedback activity*
+///                                  in the last ttl days — "24 months of
+///                                  inactivity"). Ages since a feedback
+///                                  row's own `created_at` no longer drive
+///                                  retention: if a candidate has any
+///                                  feedback inside the window, none of
+///                                  their older feedback is purged.
 ///   audit    → `audit_log`        (0 = indefinite, never deletes)
 ///
 /// `ttl=0` is treated as "retain indefinitely" for every domain.
@@ -139,9 +145,18 @@ async fn run_retention(
             res.rows_affected() as i64
         }
         "feedback" => {
+            // Audit #7 Issue #1: feedback retention is driven by inactivity,
+            // not by the age of each individual row. Delete all feedback
+            // rows belonging to candidates whose most recent feedback is
+            // older than the TTL window ("24 months of inactivity" when
+            // ttl_days = 730).
             let res = sqlx::query(
                 "DELETE FROM talent_feedback \
-                 WHERE created_at < NOW() - ($1::int || ' days')::interval",
+                 WHERE candidate_id IN ( \
+                     SELECT candidate_id FROM talent_feedback \
+                     GROUP BY candidate_id \
+                     HAVING MAX(created_at) < NOW() - ($1::int || ' days')::interval \
+                 )",
             )
             .bind(ttl)
             .execute(&state.pool)

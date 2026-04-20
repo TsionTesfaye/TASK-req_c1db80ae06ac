@@ -11,5 +11,20 @@
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>
+    <script>
+      // Audit #7 Issue #3: register the tiered offline cache worker.
+      // `sw.js` implements cache-first for the app shell, stale-while-
+      // revalidate for images, and network-first for API reads.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker
+            .register('/sw.js', { scope: '/' })
+            .catch(function (err) {
+              // Non-fatal: SW is progressive enhancement only.
+              console.warn('terraops sw registration failed:', err);
+            });
+        });
+      }
+    </script>
   </body>
 </html>

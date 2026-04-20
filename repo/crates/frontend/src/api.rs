@@ -214,18 +214,42 @@ impl ApiClient {
         &self,
         path: &str,
     ) -> Result<(T, Option<u64>), ApiError> {
-        let builder = RequestBuilder::new(&self.endpoint(path)).method(Method::GET);
-        let builder = self.attach_auth(builder);
-        let req = builder
-            .build()
-            .map_err(|e| ApiError::Network(e.to_string()))?;
-        let res = self.send_once(req).await?;
-        let total = res
-            .headers()
-            .get("x-total-count")
-            .and_then(|s| s.parse::<u64>().ok());
-        let body = Self::decode_json::<T>(res).await?;
-        Ok((body, total))
+        // Audit #7 Issue #4: honor the same idempotent-GET retry contract
+        // as `get_with_retry` (single retry on network / timeout / 5xx).
+        // Earlier revisions of this helper skipped retry entirely, which
+        // caused reader-side drift from the documented contract.
+        let mut last_err: Option<ApiError> = None;
+        for attempt in 0..=GET_RETRIES {
+            let builder = RequestBuilder::new(&self.endpoint(path)).method(Method::GET);
+            let builder = self.attach_auth(builder);
+            let req = builder
+                .build()
+                .map_err(|e| ApiError::Network(e.to_string()))?;
+            match self.send_once(req).await {
+                Ok(res) => {
+                    let status = res.status();
+                    if status >= 500 && attempt < GET_RETRIES {
+                        continue;
+                    }
+                    let total = res
+                        .headers()
+                        .get("x-total-count")
+                        .and_then(|s| s.parse::<u64>().ok());
+                    let body = Self::decode_json::<T>(res).await?;
+                    return Ok((body, total));
+                }
+                Err(ApiError::Timeout) => {
+                    last_err = Some(ApiError::Timeout);
+                    continue;
+                }
+                Err(e @ ApiError::Network(_)) => {
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        Err(last_err.unwrap_or(ApiError::Timeout))
     }
 
     async fn get_with_retry<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {

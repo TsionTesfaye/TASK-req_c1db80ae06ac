@@ -406,9 +406,21 @@ pub async fn commit_import(
     let mut tx = state.pool.begin().await?;
     let mut inserted = 0i32;
 
+    let mut updated = 0i32;
     for row in &rows {
         let (sku, spu, barcode, shelf_life_days, name, on_shelf, price_cents, currency) =
             import_validator::to_product_fields(&row.raw);
+
+        // Audit #7 Issue #2: capture a truthful `before_json` snapshot for
+        // existing rows so the history record is a real update audit,
+        // not a misleading `create` with no baseline. Fresh SKUs have no
+        // prior row — those stay as `create` with only `after_json`.
+        let before: Option<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT to_jsonb(p) FROM products p WHERE sku = $1",
+        )
+        .bind(&sku)
+        .fetch_optional(&mut *tx)
+        .await?;
 
         let product_id: (Uuid,) = sqlx::query_as(
             "INSERT INTO products (sku, spu, barcode, shelf_life_days,
@@ -436,17 +448,44 @@ pub async fn commit_import(
         .fetch_one(&mut *tx)
         .await?;
 
-        sqlx::query(
-            "INSERT INTO product_history (product_id, action, changed_by, after_json)
-             VALUES ($1, 'create', $2, $3)",
+        // Fetch `after_json` from the actual post-upsert row so the audit
+        // record reflects stored state rather than the raw CSV input.
+        let after_snap: (serde_json::Value,) = sqlx::query_as(
+            "SELECT to_jsonb(p) FROM products p WHERE id = $1",
         )
         .bind(product_id.0)
-        .bind(user.0.user_id)
-        .bind(&row.raw)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
 
-        inserted += 1;
+        match before {
+            Some(b) => {
+                sqlx::query(
+                    "INSERT INTO product_history \
+                       (product_id, action, changed_by, before_json, after_json)
+                     VALUES ($1, 'update', $2, $3, $4)",
+                )
+                .bind(product_id.0)
+                .bind(user.0.user_id)
+                .bind(&b.0)
+                .bind(&after_snap.0)
+                .execute(&mut *tx)
+                .await?;
+                updated += 1;
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO product_history \
+                       (product_id, action, changed_by, after_json)
+                     VALUES ($1, 'create', $2, $3)",
+                )
+                .bind(product_id.0)
+                .bind(user.0.user_id)
+                .bind(&after_snap.0)
+                .execute(&mut *tx)
+                .await?;
+                inserted += 1;
+            }
+        }
     }
 
     sqlx::query(
@@ -464,6 +503,7 @@ pub async fn commit_import(
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "id": id,
         "inserted": inserted,
+        "updated": updated,
         "status": "committed",
     })))
 }
