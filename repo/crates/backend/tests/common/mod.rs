@@ -31,7 +31,8 @@ use terraops_backend::{
     db,
     handlers,
     middleware::{
-        authn::AuthnMw, budget::BudgetMw, metrics::MetricsMw, request_id::RequestIdMw,
+        authn::AuthnMw, budget::BudgetMw, csrf::CsrfMw, metrics::MetricsMw,
+        request_id::RequestIdMw,
     },
     state::AppState,
 };
@@ -158,6 +159,17 @@ pub async fn truncate_dynamic_tables(pool: &PgPool) {
 
 /// Build the full Actix application exactly like `app::run` does — middleware
 /// stack + routers — but ready for `actix_web::test::init_service`.
+///
+/// The stack mirrors production (`RequestId → Authn → Csrf → Budget →
+/// Metrics`) plus one test-only shim `CsrfHeaderInjectorMw` inserted
+/// OUTSIDE `CsrfMw`. The shim transparently adds `X-Requested-With:
+/// terraops` to every inbound test request so existing handler/RBAC tests
+/// don't need to plumb the header manually — they exercise the CSRF-
+/// gated app exactly like the SPA, which always sends the header.
+///
+/// The CSRF control itself is verified directly in `csrf_tests.rs`,
+/// which builds the app via `build_test_app_strict()` (no injector) and
+/// asserts 403 on mutations without the header and pass-through on GETs.
 pub fn build_test_app(
     state: AppState,
 ) -> App<
@@ -165,7 +177,7 @@ pub fn build_test_app(
         actix_web::dev::ServiceRequest,
         Config = (),
         Response = actix_web::dev::ServiceResponse<
-            EitherBody<EitherBody<EitherBody<BoxBody>>>,
+            EitherBody<EitherBody<EitherBody<EitherBody<BoxBody>>>>,
         >,
         Error = actix_web::Error,
         InitError = (),
@@ -175,9 +187,116 @@ pub fn build_test_app(
         .app_data(web::Data::new(state))
         .wrap(MetricsMw)
         .wrap(BudgetMw)
+        .wrap(CsrfMw)
+        .wrap(csrf_injector::CsrfHeaderInjectorMw)
         .wrap(AuthnMw)
         .wrap(RequestIdMw)
         .service(web::scope("/api/v1").configure(handlers::configure))
+}
+
+/// Strict variant that mirrors production exactly — no `X-Requested-With`
+/// auto-injector. Used by `csrf_tests.rs` to prove the CSRF contract.
+pub fn build_test_app_strict(
+    state: AppState,
+) -> App<
+    impl actix_web::dev::ServiceFactory<
+        actix_web::dev::ServiceRequest,
+        Config = (),
+        Response = actix_web::dev::ServiceResponse<
+            EitherBody<EitherBody<EitherBody<EitherBody<BoxBody>>>>,
+        >,
+        Error = actix_web::Error,
+        InitError = (),
+    >,
+> {
+    App::new()
+        .app_data(web::Data::new(state))
+        .wrap(MetricsMw)
+        .wrap(BudgetMw)
+        .wrap(CsrfMw)
+        .wrap(AuthnMw)
+        .wrap(RequestIdMw)
+        .service(web::scope("/api/v1").configure(handlers::configure))
+}
+
+/// Test-only shim: injects the `X-Requested-With: terraops` header on
+/// every inbound request so pre-existing handler tests don't need to
+/// plumb the CSRF header through every `TestRequest::{post,patch,put,
+/// delete}` call site. Runs outside `CsrfMw` in `build_test_app` so
+/// `CsrfMw` sees the header and accepts the request — this keeps the
+/// CSRF middleware on the request path without forcing a mass rewrite
+/// of existing test files. The strict contract is asserted separately
+/// in `csrf_tests.rs` against `build_test_app_strict`.
+mod csrf_injector {
+    use std::{
+        future::{ready, Ready},
+        rc::Rc,
+    };
+
+    use actix_web::{
+        dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
+        http::header::{HeaderName, HeaderValue},
+        Error,
+    };
+    use futures_util::future::LocalBoxFuture;
+
+    pub struct CsrfHeaderInjectorMw;
+
+    impl<S, B> Transform<S, ServiceRequest> for CsrfHeaderInjectorMw
+    where
+        S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+        B: 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = Error;
+        type InitError = ();
+        type Transform = CsrfHeaderInjectorSvc<S>;
+        type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+        fn new_transform(&self, service: S) -> Self::Future {
+            ready(Ok(CsrfHeaderInjectorSvc {
+                inner: Rc::new(service),
+            }))
+        }
+    }
+
+    pub struct CsrfHeaderInjectorSvc<S> {
+        inner: Rc<S>,
+    }
+
+    impl<S, B> Service<ServiceRequest> for CsrfHeaderInjectorSvc<S>
+    where
+        S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+        B: 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = Error;
+        type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+        forward_ready!(inner);
+
+        fn call(&self, req: ServiceRequest) -> Self::Future {
+            let svc = self.inner.clone();
+            Box::pin(async move {
+                // Only inject if the test request didn't already set it —
+                // so csrf_tests.rs can still drive strict cases through
+                // `build_test_app_strict` (which has no injector) without
+                // this shim interfering.
+                let already = req
+                    .headers()
+                    .get("x-requested-with")
+                    .is_some();
+                if !already {
+                    let headers = req.headers_mut();
+                    headers.insert(
+                        HeaderName::from_static("x-requested-with"),
+                        HeaderValue::from_static("terraops"),
+                    );
+                }
+                svc.call(req).await
+            })
+        }
+    }
 }
 
 /// Insert a user row, encrypt email with the test keys, and grant the

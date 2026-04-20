@@ -15,7 +15,10 @@ use crate::{
     config::Config,
     crypto::keys::RuntimeKeys,
     db, handlers,
-    middleware::{authn::AuthnMw, budget::BudgetMw, metrics::MetricsMw, request_id::RequestIdMw},
+    middleware::{
+        authn::AuthnMw, budget::BudgetMw, csrf::CsrfMw, metrics::MetricsMw,
+        request_id::RequestIdMw,
+    },
     spa,
     state::AppState,
     tls,
@@ -104,6 +107,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .app_data(web::Data::new(state))
             .wrap(MetricsMw)
             .wrap(BudgetMw)
+            .wrap(CsrfMw)
             .wrap(AuthnMw)
             .wrap(RequestIdMw)
             .service(web::scope("/api/v1").configure(handlers::configure))

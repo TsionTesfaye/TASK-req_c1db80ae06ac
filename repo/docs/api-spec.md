@@ -8,7 +8,7 @@ All REST JSON under `/api/v1/`. Served by the same Actix-web binary that serves 
 
 Pagination: `page` (default 1), `page_size` (default 50, max 200). Response: `{items, page, page_size, total}` + `X-Total-Count`. Sorting: `sort_by=field&sort_dir=asc|desc` on list endpoints that expose it (see Contract Rules). Timestamps ISO-8601 with offset in payloads; UI formats MM/DD/YYYY hh:mm AM/PM.
 
-Auth headers: `Authorization: Bearer <access_jwt>` + `X-Requested-With: terraops` for mutations. Refresh token via HttpOnly SameSite=strict cookie `tops_refresh`.
+Auth headers: `Authorization: Bearer <access_jwt>` + `X-Requested-With: terraops` for mutations. The CSRF header is enforced by `middleware::csrf::CsrfMw`: any `POST`/`PUT`/`PATCH`/`DELETE` under `/api/v1/*` that is missing it (or carries a different value) is rejected with `403 FORBIDDEN` (`error_code=AUTH_FORBIDDEN`). `GET`/`HEAD`/`OPTIONS` are not gated. The frontend `ApiClient::mutate` / `mutate_no_body` attach the header on every state-changing request (Audit M1). Refresh token via HttpOnly SameSite=strict cookie `tops_refresh`.
 
 ## Auth Classification (authoritative)
 

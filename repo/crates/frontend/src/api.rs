@@ -291,6 +291,10 @@ impl ApiClient {
     ) -> Result<T, ApiError> {
         let mut builder = RequestBuilder::new(&self.endpoint(path)).method(method);
         builder = self.attach_auth(builder);
+        // CSRF guard (docs/design.md §CSRF, docs/api-spec.md §auth): every
+        // state-changing request MUST carry `X-Requested-With: terraops`.
+        // The backend enforces this in `middleware::csrf::CsrfMw`.
+        builder = builder.header("X-Requested-With", "terraops");
         let req = if let Some(b) = body {
             builder
                 .header("Content-Type", "application/json")
@@ -313,6 +317,8 @@ impl ApiClient {
     ) -> Result<(), ApiError> {
         let mut builder = RequestBuilder::new(&self.endpoint(path)).method(method);
         builder = self.attach_auth(builder);
+        // CSRF guard (see `mutate` above).
+        builder = builder.header("X-Requested-With", "terraops");
         let req = if let Some(b) = body {
             builder
                 .header("Content-Type", "application/json")

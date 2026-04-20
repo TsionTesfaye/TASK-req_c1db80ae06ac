@@ -1,9 +1,16 @@
 //! 3-second hard request budget (design §Budget rules).
 //!
 //! Any handler that takes longer than 3s is cancelled and a normalized
-//! `504 TIMEOUT` envelope is returned. This lives in front of the handler
-//! chain so it covers every authenticated route; the two system routes
-//! (`/api/v1/health`, `/api/v1/ready`) are outside the budget on purpose.
+//! `504 TIMEOUT` envelope is returned. The middleware is registered via
+//! `App::new().wrap(BudgetMw)` and therefore applies to **every** route
+//! mounted on the app — including the unauthenticated system probes
+//! `/api/v1/health` and `/api/v1/ready`. Those probes always return well
+//! under 3s in practice, so the budget is effectively a ceiling rather
+//! than an exemption; there is no explicit health/ready allow-list here.
+//! Audit L1: this comment previously claimed the probes were "outside
+//! the budget on purpose" — they are not; the code has no exemption
+//! logic, and the probes simply complete fast enough that the ceiling
+//! is never tripped.
 
 use std::{
     future::{ready, Ready},
