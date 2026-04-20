@@ -196,11 +196,12 @@ pub async fn latest_series(
 ) -> AppResult<Vec<SeriesPoint>> {
     #[derive(sqlx::FromRow)]
     struct Pt {
+        id: Uuid,
         computed_at: DateTime<Utc>,
         result: f64,
     }
     let pts: Vec<Pt> = sqlx::query_as(
-        "SELECT computed_at, result FROM metric_computations \
+        "SELECT id, computed_at, result FROM metric_computations \
          WHERE definition_id = $1 ORDER BY computed_at DESC LIMIT $2",
     )
     .bind(definition_id)
@@ -212,6 +213,7 @@ pub async fn latest_series(
         .map(|p| SeriesPoint {
             at: p.computed_at,
             value: p.result,
+            computation_id: Some(p.id),
         })
         .collect())
 }

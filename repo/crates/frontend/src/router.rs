@@ -63,6 +63,8 @@ pub enum Route {
     MetricDefinitions,
     #[at("/metrics/definitions/:id")]
     MetricDefinitionDetail { id: Uuid },
+    #[at("/metrics/computations/:id/lineage")]
+    MetricComputationLineage { id: Uuid },
     #[at("/kpi")]
     Kpi,
     #[at("/alerts/rules")]
@@ -123,6 +125,9 @@ pub fn switch(route: Route) -> Html {
         Route::MetricDefinitions => html! { <pages::analyst::Definitions/> },
         Route::MetricDefinitionDetail { id } => {
             html! { <pages::analyst::DefinitionSeries {id} /> }
+        }
+        Route::MetricComputationLineage { id } => {
+            html! { <pages::analyst::ComputationLineagePage {id} /> }
         }
         Route::Kpi => html! { <pages::analyst::Kpi/> },
         Route::AlertRules => html! { <pages::analyst::AlertRules/> },

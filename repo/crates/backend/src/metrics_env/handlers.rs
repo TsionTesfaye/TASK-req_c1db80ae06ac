@@ -340,7 +340,7 @@ async fn get_series(
                                 None,
                                 None,
                             );
-                            terraops_shared::dto::metric::SeriesPoint { at: now, value: v }
+                            terraops_shared::dto::metric::SeriesPoint { at: now, value: v, computation_id: None }
                         },
                     )
                 }
@@ -358,7 +358,7 @@ async fn get_series(
                             None,
                             None,
                         );
-                        terraops_shared::dto::metric::SeriesPoint { at: now, value: v }
+                        terraops_shared::dto::metric::SeriesPoint { at: now, value: v, computation_id: None }
                     })
                 }
                 "comfort_index" => {
@@ -419,6 +419,7 @@ async fn get_series(
                             terraops_shared::dto::metric::SeriesPoint {
                                 at: now,
                                 value: out.value,
+                                computation_id: None,
                             }
                         })
                     } else {

@@ -1694,22 +1694,38 @@ pub mod data_steward {
 
     #[function_component(ProductDetailBody)]
     fn product_detail_body(props: &ProductDetailProps) -> Html {
+        use terraops_shared::dto::product::{CreateTaxRateRequest, ProductHistoryEntry};
+
         let id = props.id;
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let detail = use_state(|| LoadState::<ProductDetail>::Loading);
+        let history = use_state(|| LoadState::<Vec<ProductHistoryEntry>>::Loading);
+
+        let new_state = use_state(String::new);
+        let new_rate_bp = use_state(String::new);
 
         let reload = {
             let auth = auth.clone();
             let detail = detail.clone();
+            let history = history.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let detail = detail.clone();
+                let history = history.clone();
                 detail.set(LoadState::Loading);
+                history.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.get_product(id).await {
                         Ok(v) => detail.set(LoadState::Loaded(v)),
                         Err(e) => detail.set(LoadState::Failed(e.user_facing())),
+                    }
+                    // History is gated by `product.history.read`; if the
+                    // caller lacks it, surface the failure in its own card
+                    // without blocking the main detail.
+                    match api.product_history(id).await {
+                        Ok(v) => history.set(LoadState::Loaded(v)),
+                        Err(e) => history.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
@@ -1721,6 +1737,77 @@ pub mod data_steward {
             .as_ref()
             .map(|s| s.has_permission("product.write"))
             .unwrap_or(false);
+
+        let add_tax_rate = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let reload = reload.clone();
+            let new_state = new_state.clone();
+            let new_rate_bp = new_rate_bp.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                let state_code = (*new_state).trim().to_uppercase();
+                if state_code.is_empty() {
+                    toast.error("State code required.");
+                    return;
+                }
+                let rate_bp: i32 = match (*new_rate_bp).trim().parse() {
+                    Ok(n) if n >= 0 => n,
+                    _ => { toast.error("Rate (bp) must be a non-negative integer."); return; }
+                };
+                let req = CreateTaxRateRequest { state_code, rate_bp };
+                let api = auth.api();
+                let toast = toast.clone();
+                let reload = reload.clone();
+                let new_state = new_state.clone();
+                let new_rate_bp = new_rate_bp.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.add_tax_rate(id, &req).await {
+                        Ok(_) => {
+                            toast.success("Tax rate added.");
+                            new_state.set(String::new());
+                            new_rate_bp.set(String::new());
+                            reload.emit(());
+                        }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        let delete_tax_rate = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let reload = reload.clone();
+            Callback::from(move |rid: Uuid| {
+                let api = auth.api();
+                let toast = toast.clone();
+                let reload = reload.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.delete_tax_rate(id, rid).await {
+                        Ok(_) => { toast.success("Tax rate removed."); reload.emit(()); }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        let delete_image = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let reload = reload.clone();
+            Callback::from(move |img_id: Uuid| {
+                let api = auth.api();
+                let toast = toast.clone();
+                let reload = reload.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.delete_product_image(id, img_id).await {
+                        Ok(_) => { toast.success("Image removed."); reload.emit(()); }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
 
         let toggle_shelf = {
             let auth = auth.clone();
@@ -1751,41 +1838,179 @@ pub mod data_steward {
                 <PlaceholderError message={AttrValue::from(m.clone())}
                     on_retry={Some({ let r = reload.clone(); Callback::from(move |_| r.emit(())) })}/>
             },
-            LoadState::Loaded(p) => html! {
-                <section class="tx-card">
-                    <h2 class="tx-title tx-title--sm">
-                        <code>{ p.sku.clone() }</code>{ " — " }{ p.name.clone() }
-                    </h2>
-                    <div class="tx-kv"><span>{ "SPU" }</span>
-                        <span>{ p.spu.clone().unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Barcode" }</span>
-                        <span class="tx-mono">{ p.barcode.clone().unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Shelf life (days)" }</span>
-                        <span>{ p.shelf_life_days.map(|n| n.to_string()).unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Description" }</span>
-                        <span>{ p.description.clone().unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Category" }</span>
-                        <span>{ p.category_name.clone().unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Brand" }</span>
-                        <span>{ p.brand_name.clone().unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Unit" }</span>
-                        <span>{ p.unit_code.clone().unwrap_or_else(|| "—".into()) }</span></div>
-                    <div class="tx-kv"><span>{ "Price" }</span>
-                        <span>{ format!("{} {:.2}", p.currency, (p.price_cents as f64) / 100.0) }</span></div>
-                    <div class="tx-kv"><span>{ "On shelf" }</span>
-                        <span>{ if p.on_shelf { "yes" } else { "no" } }</span></div>
-                    <div class="tx-kv"><span>{ "Tax rates" }</span>
-                        <span>{ format!("{} rate(s)", p.tax_rates.len()) }</span></div>
-                    <div class="tx-kv"><span>{ "Images" }</span>
-                        <span>{ format!("{} image(s)", p.images.len()) }</span></div>
-                    <div class="tx-kv"><span>{ "Updated" }</span>
-                        <span class="tx-mono">{ p.updated_at.to_rfc3339() }</span></div>
-                    if can_manage {
-                        <button class="tx-btn tx-btn--ghost" onclick={toggle_shelf}>
-                            { if p.on_shelf { "Take off shelf" } else { "Put on shelf" } }
-                        </button>
+            LoadState::Loaded(p) => {
+                // --- Tax rates panel -------------------------------------
+                let tax_headers = vec![
+                    AttrValue::from("State"),
+                    AttrValue::from("Rate (bp)"),
+                    AttrValue::from("Updated"),
+                    AttrValue::from("Actions"),
+                ];
+                let tax_rows: Vec<Vec<Html>> = p.tax_rates.iter().map(|t| {
+                    let rid = t.id;
+                    let delete_tax_rate = delete_tax_rate.clone();
+                    let ondel = Callback::from(move |_: MouseEvent| delete_tax_rate.emit(rid));
+                    vec![
+                        html! { <code class="tx-mono">{ t.state_code.clone() }</code> },
+                        html! { { format!("{} ({:.2}%)", t.rate_bp, (t.rate_bp as f64) / 100.0) } },
+                        html! { <span class="tx-mono">{ t.updated_at.to_rfc3339() }</span> },
+                        html! {
+                            if can_manage {
+                                <button class="tx-btn tx-btn--ghost" onclick={ondel}>
+                                    { "Delete" }
+                                </button>
+                            } else {
+                                <span class="tx-subtle">{ "—" }</span>
+                            }
+                        },
+                    ]
+                }).collect();
+
+                let bind_ns = {
+                    let new_state = new_state.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let t: HtmlInputElement = e.target_unchecked_into();
+                        new_state.set(t.value());
+                    })
+                };
+                let bind_nr = {
+                    let new_rate_bp = new_rate_bp.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let t: HtmlInputElement = e.target_unchecked_into();
+                        new_rate_bp.set(t.value());
+                    })
+                };
+
+                // --- Images panel ----------------------------------------
+                let images_html = if p.images.is_empty() {
+                    html! { <p class="tx-subtle">{ "No images." }</p> }
+                } else {
+                    html! {
+                        <div class="tx-thumb-grid">
+                            { for p.images.iter().map(|img| {
+                                let iid = img.id;
+                                let delete_image = delete_image.clone();
+                                let ondel = Callback::from(move |_: MouseEvent|
+                                    delete_image.emit(iid));
+                                html! {
+                                    <figure class="tx-thumb">
+                                        <img src={img.signed_url.clone()}
+                                             alt={AttrValue::from(format!("image {iid}"))}/>
+                                        <figcaption>
+                                            <span class="tx-mono">
+                                                { format!("{} · {} B", img.content_type, img.size_bytes) }
+                                            </span>
+                                            if can_manage {
+                                                <button class="tx-btn tx-btn--ghost"
+                                                    onclick={ondel}>{ "Delete" }</button>
+                                            }
+                                        </figcaption>
+                                    </figure>
+                                }
+                            }) }
+                        </div>
                     }
-                </section>
+                };
+
+                // --- History panel ---------------------------------------
+                let history_html = match &*history {
+                    LoadState::Loading => html! { <PlaceholderLoading/> },
+                    LoadState::Failed(m) => html! { <p class="tx-subtle">{ m.clone() }</p> },
+                    LoadState::Loaded(rows) => {
+                        let headers = vec![
+                            AttrValue::from("When"),
+                            AttrValue::from("Action"),
+                            AttrValue::from("By"),
+                        ];
+                        let hrows: Vec<Vec<Html>> = rows.iter().map(|h| vec![
+                            html! { <span class="tx-mono">{ h.changed_at.to_rfc3339() }</span> },
+                            html! { <span class="tx-chip">{ h.action.clone() }</span> },
+                            html! { {
+                                h.changed_by_name.clone()
+                                    .or_else(|| h.changed_by.map(|u| u.to_string()))
+                                    .unwrap_or_else(|| "—".into())
+                            } },
+                        ]).collect();
+                        html! {
+                            <DataTable headers={headers} rows={hrows}
+                                empty_label="No history yet."/>
+                        }
+                    }
+                };
+
+                html! {
+                    <>
+                        <section class="tx-card">
+                            <h2 class="tx-title tx-title--sm">
+                                <code>{ p.sku.clone() }</code>{ " — " }{ p.name.clone() }
+                            </h2>
+                            <div class="tx-kv"><span>{ "SPU" }</span>
+                                <span>{ p.spu.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Barcode" }</span>
+                                <span class="tx-mono">{ p.barcode.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Shelf life (days)" }</span>
+                                <span>{ p.shelf_life_days.map(|n| n.to_string()).unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Description" }</span>
+                                <span>{ p.description.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Category" }</span>
+                                <span>{ p.category_name.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Brand" }</span>
+                                <span>{ p.brand_name.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Unit" }</span>
+                                <span>{ p.unit_code.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                            <div class="tx-kv"><span>{ "Price" }</span>
+                                <span>{ format!("{} {:.2}", p.currency, (p.price_cents as f64) / 100.0) }</span></div>
+                            <div class="tx-kv"><span>{ "On shelf" }</span>
+                                <span>{ if p.on_shelf { "yes" } else { "no" } }</span></div>
+                            <div class="tx-kv"><span>{ "Updated" }</span>
+                                <span class="tx-mono">{ p.updated_at.to_rfc3339() }</span></div>
+                            if can_manage {
+                                <button class="tx-btn tx-btn--ghost" onclick={toggle_shelf}>
+                                    { if p.on_shelf { "Take off shelf" } else { "Put on shelf" } }
+                                </button>
+                            }
+                        </section>
+                        <section class="tx-card">
+                            <h2 class="tx-title tx-title--sm">{ "Tax rates" }</h2>
+                            <DataTable headers={tax_headers} rows={tax_rows}
+                                empty_label="No tax rates configured."/>
+                            if can_manage {
+                                <form class="tx-form tx-form--inline" onsubmit={add_tax_rate}>
+                                    <label class="tx-field">
+                                        <span>{ "State (e.g. CA)" }</span>
+                                        <input class="tx-input" type="text" maxlength="2"
+                                            value={(*new_state).clone()}
+                                            oninput={bind_ns}/>
+                                    </label>
+                                    <label class="tx-field">
+                                        <span>{ "Rate (basis points)" }</span>
+                                        <input class="tx-input" type="number" min="0"
+                                            value={(*new_rate_bp).clone()}
+                                            oninput={bind_nr}/>
+                                    </label>
+                                    <div class="tx-form__actions">
+                                        <button type="submit" class="tx-btn">{ "Add rate" }</button>
+                                    </div>
+                                </form>
+                            }
+                        </section>
+                        <section class="tx-card">
+                            <h2 class="tx-title tx-title--sm">
+                                { format!("Images ({})", p.images.len()) }
+                            </h2>
+                            { images_html }
+                            if can_manage {
+                                <p class="tx-subtle">
+                                    { "Upload new images via the catalog import or API (see docs)." }
+                                </p>
+                            }
+                        </section>
+                        <section class="tx-card">
+                            <h2 class="tx-title tx-title--sm">{ "Change history" }</h2>
+                            { history_html }
+                        </section>
+                    </>
+                }
             },
         }
     }
@@ -2271,11 +2496,28 @@ pub mod analyst {
                     on_retry={Some({ let r = reload.clone(); Callback::from(move |_| r.emit(())) })}/>
             },
             LoadState::Loaded(s) => {
-                let headers = vec![AttrValue::from("At"), AttrValue::from("Value")];
-                let trows: Vec<Vec<Html>> = s.points.iter().map(|p| vec![
-                    html! { <span class="tx-mono">{ p.at.to_rfc3339() }</span> },
-                    html! { { format!("{:.3}", p.value) } },
-                ]).collect();
+                let headers = vec![
+                    AttrValue::from("At"),
+                    AttrValue::from("Value"),
+                    AttrValue::from("Lineage"),
+                ];
+                let trows: Vec<Vec<Html>> = s.points.iter().map(|p| {
+                    let why = match p.computation_id {
+                        Some(cid) => html! {
+                            <Link<Route>
+                                to={Route::MetricComputationLineage { id: cid }}
+                                classes={classes!("tx-link")}>
+                                { "Why this value?" }
+                            </Link<Route>>
+                        },
+                        None => html! { <span class="tx-subtle">{ "live" }</span> },
+                    };
+                    vec![
+                        html! { <span class="tx-mono">{ p.at.to_rfc3339() }</span> },
+                        html! { { format!("{:.3}", p.value) } },
+                        why,
+                    ]
+                }).collect();
                 html! {
                     <section class="tx-card">
                         <h2 class="tx-title tx-title--sm">
@@ -2283,6 +2525,121 @@ pub mod analyst {
                         </h2>
                         <DataTable headers={headers} rows={trows} empty_label="No computations yet."/>
                     </section>
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Metric lineage ("why this value")
+    // ------------------------------------------------------------------
+
+    #[derive(Properties, PartialEq)]
+    pub struct ComputationLineageProps {
+        pub id: Uuid,
+    }
+
+    #[function_component(ComputationLineagePage)]
+    pub fn computation_lineage_page(props: &ComputationLineageProps) -> Html {
+        let id = props.id;
+        html! {
+            <Layout title="Computation lineage" subtitle="Formula, inputs, and confidence for one computed point.">
+                <PermGate permission="metric.read">
+                    <ComputationLineageBody {id} />
+                </PermGate>
+            </Layout>
+        }
+    }
+
+    #[function_component(ComputationLineageBody)]
+    fn computation_lineage_body(props: &ComputationLineageProps) -> Html {
+        let id = props.id;
+        let auth = use_context::<AuthContext>().expect("AuthContext");
+        let lineage = use_state(|| {
+            LoadState::<terraops_shared::dto::metric::ComputationLineage>::Loading
+        });
+
+        let reload = {
+            let auth = auth.clone();
+            let lineage = lineage.clone();
+            Callback::from(move |_: ()| {
+                let api = auth.api();
+                let lineage = lineage.clone();
+                lineage.set(LoadState::Loading);
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.metric_lineage(id).await {
+                        Ok(v) => lineage.set(LoadState::Loaded(v)),
+                        Err(e) => lineage.set(LoadState::Failed(e.user_facing())),
+                    }
+                });
+            })
+        };
+        { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
+
+        match &*lineage {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! {
+                <PlaceholderError message={AttrValue::from(m.clone())}
+                    on_retry={Some({ let r = reload.clone(); Callback::from(move |_| r.emit(())) })}/>
+            },
+            LoadState::Loaded(l) => {
+                let headers = vec![
+                    AttrValue::from("Observation"),
+                    AttrValue::from("Observed at"),
+                    AttrValue::from("Value"),
+                ];
+                let trows: Vec<Vec<Html>> = l.input_observations.iter().map(|o| vec![
+                    html! { <code class="tx-mono">{ o.observation_id.to_string() }</code> },
+                    html! { <span class="tx-mono">{ o.observed_at.to_rfc3339() }</span> },
+                    html! { { format!("{:.4}", o.value) } },
+                ]).collect();
+                let align = l.alignment
+                    .map(|a| format!("{:.2}", a))
+                    .unwrap_or_else(|| "—".into());
+                let conf = l.confidence
+                    .map(|c| format!("{:.2}", c))
+                    .unwrap_or_else(|| "—".into());
+                let params_txt = serde_json::to_string_pretty(&l.params)
+                    .unwrap_or_else(|_| "{}".into());
+                html! {
+                    <>
+                        <section class="tx-card">
+                            <h2 class="tx-title tx-title--sm">{ "Why this value?" }</h2>
+                            <div class="tx-kv"><span>{ "Computation" }</span>
+                                <span class="tx-mono">{ l.computation_id.to_string() }</span></div>
+                            <div class="tx-kv"><span>{ "Definition" }</span>
+                                <span class="tx-mono">
+                                    <Link<Route>
+                                        to={Route::MetricDefinitionDetail { id: l.definition_id }}
+                                        classes={classes!("tx-link")}>
+                                        { l.definition_id.to_string() }
+                                    </Link<Route>>
+                                </span></div>
+                            <div class="tx-kv"><span>{ "Formula" }</span>
+                                <span><code>{ l.formula.clone() }</code></span></div>
+                            <div class="tx-kv"><span>{ "Result" }</span>
+                                <span>{ format!("{:.4}", l.result) }</span></div>
+                            <div class="tx-kv"><span>{ "Window" }</span>
+                                <span class="tx-mono">
+                                    { format!("{} → {}",
+                                        l.window_start.to_rfc3339(),
+                                        l.window_end.to_rfc3339()) }
+                                </span></div>
+                            <div class="tx-kv"><span>{ "Computed at" }</span>
+                                <span class="tx-mono">{ l.computed_at.to_rfc3339() }</span></div>
+                            <div class="tx-kv"><span>{ "Alignment" }</span><span>{ align }</span></div>
+                            <div class="tx-kv"><span>{ "Confidence" }</span><span>{ conf }</span></div>
+                            <div class="tx-kv"><span>{ "Params" }</span>
+                                <pre class="tx-pre">{ params_txt }</pre></div>
+                        </section>
+                        <section class="tx-card">
+                            <h2 class="tx-title tx-title--sm">
+                                { format!("Inputs ({} observation(s))", l.input_observations.len()) }
+                            </h2>
+                            <DataTable headers={headers} rows={trows}
+                                empty_label="No contributing observations."/>
+                        </section>
+                    </>
                 }
             }
         }
@@ -2301,26 +2658,118 @@ pub mod analyst {
 
     #[function_component(KpiBody)]
     fn kpi_body() -> Html {
+        use terraops_shared::dto::kpi::{AnomalyRow, CycleTimeRow, DrillRow, EfficiencyRow, KpiSummary};
+
         let auth = use_context::<AuthContext>().expect("AuthContext");
-        let summary = use_state(|| LoadState::<terraops_shared::dto::kpi::KpiSummary>::Loading);
+        let summary = use_state(|| LoadState::<KpiSummary>::Loading);
+        let cycle = use_state(|| LoadState::<Vec<CycleTimeRow>>::Loading);
+        let anomalies = use_state(|| LoadState::<Vec<AnomalyRow>>::Loading);
+        let efficiency = use_state(|| LoadState::<Vec<EfficiencyRow>>::Loading);
+        let drill = use_state(|| LoadState::<Vec<DrillRow>>::Loading);
+
+        // Filter form state (ISO-8601 timestamps). Empty = unfiltered.
+        let from_ts = use_state(String::new);
+        let to_ts = use_state(String::new);
+
+        let build_qs = {
+            let from_ts = from_ts.clone();
+            let to_ts = to_ts.clone();
+            move || -> String {
+                let mut parts = Vec::new();
+                let f = (*from_ts).trim().to_string();
+                let t = (*to_ts).trim().to_string();
+                if !f.is_empty() { parts.push(format!("from={f}")); }
+                if !t.is_empty() { parts.push(format!("to={t}")); }
+                parts.join("&")
+            }
+        };
+
         let reload = {
             let auth = auth.clone();
             let summary = summary.clone();
+            let cycle = cycle.clone();
+            let anomalies = anomalies.clone();
+            let efficiency = efficiency.clone();
+            let drill = drill.clone();
+            let build_qs = build_qs.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let summary = summary.clone();
+                let cycle = cycle.clone();
+                let anomalies = anomalies.clone();
+                let efficiency = efficiency.clone();
+                let drill = drill.clone();
+                let qs = build_qs();
                 summary.set(LoadState::Loading);
+                cycle.set(LoadState::Loading);
+                anomalies.set(LoadState::Loading);
+                efficiency.set(LoadState::Loading);
+                drill.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.kpi_summary().await {
                         Ok(v) => summary.set(LoadState::Loaded(v)),
                         Err(e) => summary.set(LoadState::Failed(e.user_facing())),
+                    }
+                    match api.kpi_cycle_time_page(&qs).await {
+                        Ok(p) => cycle.set(LoadState::Loaded(p.items)),
+                        Err(e) => cycle.set(LoadState::Failed(e.user_facing())),
+                    }
+                    match api.kpi_anomalies_page(&qs).await {
+                        Ok(p) => anomalies.set(LoadState::Loaded(p.items)),
+                        Err(e) => anomalies.set(LoadState::Failed(e.user_facing())),
+                    }
+                    match api.kpi_efficiency_page(&qs).await {
+                        Ok(p) => efficiency.set(LoadState::Loaded(p.items)),
+                        Err(e) => efficiency.set(LoadState::Failed(e.user_facing())),
+                    }
+                    match api.kpi_drill_page(&qs).await {
+                        Ok(p) => drill.set(LoadState::Loaded(p.items)),
+                        Err(e) => drill.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
         };
         { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
 
-        match &*summary {
+        let on_submit = {
+            let reload = reload.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                reload.emit(());
+            })
+        };
+        let bind_input = |s: UseStateHandle<String>| {
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                s.set(t.value());
+            })
+        };
+
+        let filters = html! {
+            <section class="tx-card">
+                <h2 class="tx-title tx-title--sm">{ "Time window" }</h2>
+                <form class="tx-form tx-form--inline" onsubmit={on_submit}>
+                    <label class="tx-field">
+                        <span>{ "From (YYYY-MM-DD)" }</span>
+                        <input class="tx-input" type="date" value={(*from_ts).clone()}
+                            oninput={bind_input(from_ts.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "To (YYYY-MM-DD)" }</span>
+                        <input class="tx-input" type="date" value={(*to_ts).clone()}
+                            oninput={bind_input(to_ts.clone())}/>
+                    </label>
+                    <div class="tx-form__actions">
+                        <button type="submit" class="tx-btn">{ "Apply" }</button>
+                    </div>
+                </form>
+                <p class="tx-subtle">
+                    { "Leave both fields empty for the default rolling window." }
+                </p>
+            </section>
+        };
+
+        let summary_cards = match &*summary {
             LoadState::Loading => html! { <PlaceholderLoading/> },
             LoadState::Failed(m) => html! {
                 <PlaceholderError message={AttrValue::from(m.clone())}
@@ -2351,6 +2800,129 @@ pub mod analyst {
                     </article>
                 </section>
             },
+        };
+
+        let render_cycle = |list: &LoadState<Vec<CycleTimeRow>>| match list {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! {
+                <p class="tx-error">{ m.clone() }</p>
+            },
+            LoadState::Loaded(rows) => {
+                let headers = vec![
+                    AttrValue::from("Day"),
+                    AttrValue::from("Site"),
+                    AttrValue::from("Dept"),
+                    AttrValue::from("Avg hours"),
+                    AttrValue::from("Count"),
+                ];
+                let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
+                    html! { <span class="tx-mono">{ r.day.to_string() }</span> },
+                    html! { <code class="tx-mono">{
+                        r.site_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
+                    }</code> },
+                    html! { <code class="tx-mono">{
+                        r.department_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
+                    }</code> },
+                    html! { { format!("{:.2}", r.avg_hours) } },
+                    html! { { r.count } },
+                ]).collect();
+                html! { <DataTable headers={headers} rows={trows}
+                                   empty_label="No cycle-time rows in this window."/> }
+            }
+        };
+
+        let render_anomalies = |list: &LoadState<Vec<AnomalyRow>>| match list {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! { <p class="tx-error">{ m.clone() }</p> },
+            LoadState::Loaded(rows) => {
+                let headers = vec![
+                    AttrValue::from("Day"),
+                    AttrValue::from("Site"),
+                    AttrValue::from("Dept"),
+                    AttrValue::from("Count"),
+                ];
+                let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
+                    html! { <span class="tx-mono">{ r.day.to_string() }</span> },
+                    html! { <code class="tx-mono">{
+                        r.site_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
+                    }</code> },
+                    html! { <code class="tx-mono">{
+                        r.department_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
+                    }</code> },
+                    html! { { r.count } },
+                ]).collect();
+                html! { <DataTable headers={headers} rows={trows}
+                                   empty_label="No anomalies in this window."/> }
+            }
+        };
+
+        let render_efficiency = |list: &LoadState<Vec<EfficiencyRow>>| match list {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! { <p class="tx-error">{ m.clone() }</p> },
+            LoadState::Loaded(rows) => {
+                let headers = vec![
+                    AttrValue::from("Day"),
+                    AttrValue::from("Site"),
+                    AttrValue::from("Dept"),
+                    AttrValue::from("Index"),
+                ];
+                let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
+                    html! { <span class="tx-mono">{ r.day.to_string() }</span> },
+                    html! { <code class="tx-mono">{
+                        r.site_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
+                    }</code> },
+                    html! { <code class="tx-mono">{
+                        r.department_id.map(|u| u.to_string()).unwrap_or_else(|| "—".into())
+                    }</code> },
+                    html! { { format!("{:.3}", r.index) } },
+                ]).collect();
+                html! { <DataTable headers={headers} rows={trows}
+                                   empty_label="No efficiency rows in this window."/> }
+            }
+        };
+
+        let render_drill = |list: &LoadState<Vec<DrillRow>>| match list {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! { <p class="tx-error">{ m.clone() }</p> },
+            LoadState::Loaded(rows) => {
+                let headers = vec![
+                    AttrValue::from("Dimension"),
+                    AttrValue::from("Label"),
+                    AttrValue::from("Metric"),
+                    AttrValue::from("Value"),
+                ];
+                let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
+                    html! { { r.dimension.clone() } },
+                    html! { { r.label.clone() } },
+                    html! { <span class="tx-chip">{ r.metric_kind.clone() }</span> },
+                    html! { { format!("{:.3}", r.value) } },
+                ]).collect();
+                html! { <DataTable headers={headers} rows={trows}
+                                   empty_label="No drill rows in this window."/> }
+            }
+        };
+
+        html! {
+            <>
+                { filters }
+                { summary_cards }
+                <section class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Cycle time" }</h2>
+                    { render_cycle(&*cycle) }
+                </section>
+                <section class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Anomalies" }</h2>
+                    { render_anomalies(&*anomalies) }
+                </section>
+                <section class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Efficiency" }</h2>
+                    { render_efficiency(&*efficiency) }
+                </section>
+                <section class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Drill-down" }</h2>
+                    { render_drill(&*drill) }
+                </section>
+            </>
         }
     }
 
@@ -2507,6 +3079,11 @@ pub mod analyst {
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let list = use_state(|| LoadState::<Vec<ReportJobDto>>::Loading);
 
+        // Create form state — `kind` × `format` × optional cron (RP1–RP2).
+        let kind = use_state(|| "kpi_summary".to_string());
+        let fmt = use_state(|| "csv".to_string());
+        let cron = use_state(String::new);
+
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
@@ -2541,7 +3118,121 @@ pub mod analyst {
             })
         };
 
-        match &*list {
+        let on_submit = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let reload = reload.clone();
+            let kind = kind.clone();
+            let fmt = fmt.clone();
+            let cron = cron.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                let cron_val = {
+                    let t = (*cron).trim();
+                    if t.is_empty() { None } else { Some(t.to_string()) }
+                };
+                let req = terraops_shared::dto::report::CreateReportJobRequest {
+                    kind: (*kind).clone(),
+                    format: (*fmt).clone(),
+                    params: None,
+                    cron: cron_val,
+                };
+                let api = auth.api();
+                let toast = toast.clone();
+                let reload = reload.clone();
+                let cron = cron.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.create_report_job(&req).await {
+                        Ok(_) => {
+                            toast.success("Report scheduled.");
+                            cron.set(String::new());
+                            reload.emit(());
+                        }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        let download_artifact = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            Callback::from(move |(id, fmt): (Uuid, String)| {
+                let api = auth.api();
+                let toast = toast.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.download_report_artifact(id).await {
+                        Ok(bytes) => {
+                            if let Err(e) = trigger_blob_download(
+                                &bytes,
+                                &format!("report-{id}.{fmt}"),
+                            ) {
+                                toast.error(&format!("Download failed: {e}"));
+                            }
+                        }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        // Schedule form card.
+        let bind_str = |s: UseStateHandle<String>| {
+            Callback::from(move |e: Event| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                s.set(t.value());
+            })
+        };
+        let bind_input = |s: UseStateHandle<String>| {
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                s.set(t.value());
+            })
+        };
+
+        let create_card = html! {
+            <section class="tx-card">
+                <h2 class="tx-title tx-title--sm">{ "Schedule a new report" }</h2>
+                <form class="tx-form tx-form--inline" onsubmit={on_submit}>
+                    <label class="tx-field">
+                        <span>{ "Kind" }</span>
+                        <select class="tx-input" onchange={bind_str(kind.clone())}>
+                            <option value="kpi_summary"
+                                selected={&*kind == "kpi_summary"}>{ "KPI summary" }</option>
+                            <option value="kpi_cycle_time"
+                                selected={&*kind == "kpi_cycle_time"}>{ "KPI cycle time" }</option>
+                            <option value="kpi_efficiency"
+                                selected={&*kind == "kpi_efficiency"}>{ "KPI efficiency" }</option>
+                            <option value="env_observations"
+                                selected={&*kind == "env_observations"}>{ "Env observations" }</option>
+                            <option value="alerts"
+                                selected={&*kind == "alerts"}>{ "Alerts" }</option>
+                        </select>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Format" }</span>
+                        <select class="tx-input" onchange={bind_str(fmt.clone())}>
+                            <option value="csv"  selected={&*fmt == "csv"}>{ "CSV" }</option>
+                            <option value="json" selected={&*fmt == "json"}>{ "JSON" }</option>
+                        </select>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Cron (optional)" }</span>
+                        <input class="tx-input" type="text" value={(*cron).clone()}
+                            placeholder="e.g. 0 8 * * *"
+                            oninput={bind_input(cron.clone())}/>
+                    </label>
+                    <div class="tx-form__actions">
+                        <button type="submit" class="tx-btn">{ "Schedule" }</button>
+                    </div>
+                </form>
+                <p class="tx-subtle">
+                    { "Leave cron empty for a one-off job. The server enqueues it immediately." }
+                </p>
+            </section>
+        };
+
+        let body = match &*list {
             LoadState::Loading => html! { <PlaceholderLoading/> },
             LoadState::Failed(m) => html! {
                 <PlaceholderError message={AttrValue::from(m.clone())}
@@ -2550,26 +3241,85 @@ pub mod analyst {
             LoadState::Loaded(rows) => {
                 let headers = vec![
                     AttrValue::from("Kind"), AttrValue::from("Format"),
+                    AttrValue::from("Cron"),
                     AttrValue::from("Status"), AttrValue::from("Last run"),
-                    AttrValue::from(""),
+                    AttrValue::from("Actions"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|j| {
                     let jid = j.id;
+                    let jfmt = j.format.clone();
+                    let has_artifact = j.last_artifact_path.is_some();
                     let run_now = run_now.clone();
-                    let onclick = Callback::from(move |_: MouseEvent| run_now.emit(jid));
+                    let download_artifact = download_artifact.clone();
+                    let onrun = Callback::from(move |_: MouseEvent| run_now.emit(jid));
+                    let ondl = {
+                        let jfmt = jfmt.clone();
+                        Callback::from(move |_: MouseEvent| {
+                            download_artifact.emit((jid, jfmt.clone()));
+                        })
+                    };
                     vec![
                         html! { { j.kind.clone() } },
                         html! { <code>{ j.format.clone() }</code> },
+                        html! { <span class="tx-mono">{
+                            j.cron.clone().unwrap_or_else(|| "—".into())
+                        }</span> },
                         html! { <span class="tx-chip">{ j.status.clone() }</span> },
                         html! { <span class="tx-mono">{
                             j.last_run_at.map(|t| t.to_rfc3339()).unwrap_or_else(|| "—".into())
                         }</span> },
-                        html! { <button class="tx-btn tx-btn--ghost" onclick={onclick}>{ "Run now" }</button> },
+                        html! {
+                            <div class="tx-row-actions">
+                                <button class="tx-btn tx-btn--ghost" onclick={onrun}>
+                                    { "Run now" }
+                                </button>
+                                if has_artifact {
+                                    <button class="tx-btn tx-btn--ghost" onclick={ondl}>
+                                        { "Download" }
+                                    </button>
+                                }
+                            </div>
+                        },
                     ]
                 }).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No report jobs."/> }
             }
-        }
+        };
+
+        html! { <>{ create_card }{ body }</> }
+    }
+
+    /// Trigger a browser download from a raw byte buffer.
+    ///
+    /// The SPA uses this after `download_report_artifact()` returns to
+    /// surface artifact bytes to the user as a real file rather than a
+    /// navigation away from the app.
+    fn trigger_blob_download(bytes: &[u8], filename: &str) -> Result<(), String> {
+        use js_sys::{Array, Uint8Array};
+        use wasm_bindgen::JsCast;
+        use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+        let u8a = Uint8Array::new_with_length(bytes.len() as u32);
+        u8a.copy_from(bytes);
+        let parts = Array::new();
+        parts.push(&u8a.buffer());
+        let mut bag = BlobPropertyBag::new();
+        bag.type_("application/octet-stream");
+        let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &bag)
+            .map_err(|_| "blob construction failed".to_string())?;
+        let url = Url::create_object_url_with_blob(&blob)
+            .map_err(|_| "url.createObjectURL failed".to_string())?;
+        let win = web_sys::window().ok_or("no window")?;
+        let doc = win.document().ok_or("no document")?;
+        let a: HtmlAnchorElement = doc
+            .create_element("a")
+            .map_err(|_| "create <a> failed".to_string())?
+            .dyn_into()
+            .map_err(|_| "not an anchor".to_string())?;
+        a.set_href(&url);
+        a.set_download(filename);
+        a.click();
+        let _ = Url::revoke_object_url(&url);
+        Ok(())
     }
 }
 
@@ -2694,15 +3444,69 @@ pub mod recruiter {
     fn candidates_body() -> Html {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let list = use_state(|| LoadState::<Vec<CandidateListItem>>::Loading);
+
+        // Search / filter state. The querystring is rebuilt from these
+        // fields each time the user submits the search form.
+        let q_text = use_state(String::new);
+        let skills = use_state(String::new);
+        let min_years = use_state(String::new);
+        let location = use_state(String::new);
+        let availability = use_state(String::new);
+        let major = use_state(String::new);
+        let min_education = use_state(String::new);
+
+        // Canonicalized querystring for the current form state (used by
+        // tests + the reload callback).
+        let build_query = {
+            let q_text = q_text.clone();
+            let skills = skills.clone();
+            let min_years = min_years.clone();
+            let location = location.clone();
+            let availability = availability.clone();
+            let major = major.clone();
+            let min_education = min_education.clone();
+            move || -> String {
+                let mut parts: Vec<String> = Vec::new();
+                let push = |p: &mut Vec<String>, k: &str, v: &str| {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        // naive but sufficient URL-encoding for this surface;
+                        // backend Actix Query decoder tolerates spaces as `+`.
+                        let enc: String = v
+                            .chars()
+                            .map(|c| match c {
+                                ' ' => "+".into(),
+                                '&' | '#' | '?' | '=' | '+' => {
+                                    format!("%{:02X}", c as u8)
+                                }
+                                _ => c.to_string(),
+                            })
+                            .collect();
+                        p.push(format!("{k}={enc}"));
+                    }
+                };
+                push(&mut parts, "q", &*q_text);
+                push(&mut parts, "skills", &*skills);
+                push(&mut parts, "min_years", &*min_years);
+                push(&mut parts, "location", &*location);
+                push(&mut parts, "availability", &*availability);
+                push(&mut parts, "major", &*major);
+                push(&mut parts, "min_education", &*min_education);
+                parts.join("&")
+            }
+        };
+
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
+            let build_query = build_query.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
+                let qs = build_query();
                 list.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
-                    match api.list_candidates().await {
+                    match api.list_candidates_query(&qs).await {
                         Ok(v) => list.set(LoadState::Loaded(v)),
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
@@ -2711,7 +3515,105 @@ pub mod recruiter {
         };
         { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
 
-        match &*list {
+        let on_submit = {
+            let reload = reload.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                reload.emit(());
+            })
+        };
+        let on_clear = {
+            let q_text = q_text.clone();
+            let skills = skills.clone();
+            let min_years = min_years.clone();
+            let location = location.clone();
+            let availability = availability.clone();
+            let major = major.clone();
+            let min_education = min_education.clone();
+            let reload = reload.clone();
+            Callback::from(move |_: MouseEvent| {
+                q_text.set(String::new());
+                skills.set(String::new());
+                min_years.set(String::new());
+                location.set(String::new());
+                availability.set(String::new());
+                major.set(String::new());
+                min_education.set(String::new());
+                reload.emit(());
+            })
+        };
+        let bind = |s: UseStateHandle<String>| {
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                s.set(t.value());
+            })
+        };
+
+        let filters = html! {
+            <section class="tx-card">
+                <h2 class="tx-title tx-title--sm">{ "Search candidates" }</h2>
+                <form class="tx-form tx-form--inline" onsubmit={on_submit}>
+                    <label class="tx-field">
+                        <span>{ "Search" }</span>
+                        <input class="tx-input" type="text" value={(*q_text).clone()}
+                            placeholder="name, email, bio"
+                            oninput={bind(q_text.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Skills (CSV)" }</span>
+                        <input class="tx-input" type="text" value={(*skills).clone()}
+                            placeholder="rust,sql"
+                            oninput={bind(skills.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Min years" }</span>
+                        <input class="tx-input" type="number" min="0" value={(*min_years).clone()}
+                            oninput={bind(min_years.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Location" }</span>
+                        <input class="tx-input" type="text" value={(*location).clone()}
+                            oninput={bind(location.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Availability" }</span>
+                        <input class="tx-input" type="text" value={(*availability).clone()}
+                            placeholder="immediate / 2_weeks / 1_month"
+                            oninput={bind(availability.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Major" }</span>
+                        <input class="tx-input" type="text" value={(*major).clone()}
+                            oninput={bind(major.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Min education" }</span>
+                        <select class="tx-input" onchange={{
+                            let s = min_education.clone();
+                            Callback::from(move |e: Event| {
+                                let t: HtmlInputElement = e.target_unchecked_into();
+                                s.set(t.value());
+                            })
+                        }}>
+                            <option value="" selected={(*min_education).is_empty()}>{ "Any" }</option>
+                            <option value="highschool" selected={&*min_education == "highschool"}>{ "High school" }</option>
+                            <option value="associate"  selected={&*min_education == "associate"}>{ "Associate" }</option>
+                            <option value="bachelor"   selected={&*min_education == "bachelor"}>{ "Bachelor" }</option>
+                            <option value="master"     selected={&*min_education == "master"}>{ "Master" }</option>
+                            <option value="phd"        selected={&*min_education == "phd"}>{ "PhD" }</option>
+                        </select>
+                    </label>
+                    <div class="tx-form__actions">
+                        <button type="submit" class="tx-btn">{ "Search" }</button>
+                        <button type="button" class="tx-btn tx-btn--ghost" onclick={on_clear}>
+                            { "Clear" }
+                        </button>
+                    </div>
+                </form>
+            </section>
+        };
+
+        let body = match &*list {
             LoadState::Loading => html! { <PlaceholderLoading/> },
             LoadState::Failed(m) => html! {
                 <PlaceholderError message={AttrValue::from(m.clone())}
@@ -2742,9 +3644,12 @@ pub mod recruiter {
                         html! { { format!("{}%", c.completeness_score) } },
                     ]
                 }).collect();
-                html! { <DataTable headers={headers} rows={trows} empty_label="No candidates."/> }
+                html! { <DataTable headers={headers} rows={trows}
+                                   empty_label="No candidates match the filters."/> }
             }
-        }
+        };
+
+        html! { <>{ filters }{ body }</> }
     }
 
     #[derive(Properties, PartialEq)]

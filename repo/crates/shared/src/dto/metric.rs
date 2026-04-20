@@ -77,6 +77,12 @@ pub struct UpdateMetricDefinitionRequest {
 pub struct SeriesPoint {
     pub at: DateTime<Utc>,
     pub value: f64,
+    /// Underlying metric_computations row id, so the UI can link each
+    /// series point to its full lineage (`/metrics/computations/{id}/lineage`).
+    /// Scalar-formula live points that are not persisted as a computation
+    /// return `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -149,10 +155,24 @@ mod tests {
     #[test]
     fn series_point_roundtrip() {
         let at = chrono::Utc::now();
-        let sp = SeriesPoint { at, value: 42.5 };
+        let sp = SeriesPoint { at, value: 42.5, computation_id: None };
         let j = serde_json::to_value(&sp).unwrap();
         let back: SeriesPoint = serde_json::from_value(j).unwrap();
         assert_eq!(back.value, 42.5);
         assert_eq!(back.at, at);
+        assert_eq!(back.computation_id, None);
+        // When None, the field is omitted from JSON entirely.
+        assert!(!serde_json::to_string(&sp).unwrap().contains("computation_id"));
+    }
+
+    #[test]
+    fn series_point_carries_computation_id() {
+        let at = chrono::Utc::now();
+        let cid = Uuid::new_v4();
+        let sp = SeriesPoint { at, value: 1.0, computation_id: Some(cid) };
+        let s = serde_json::to_string(&sp).unwrap();
+        assert!(s.contains("computation_id"));
+        let back: SeriesPoint = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.computation_id, Some(cid));
     }
 }

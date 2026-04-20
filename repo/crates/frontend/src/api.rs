@@ -756,11 +756,60 @@ impl ApiClient {
     pub async fn cancel_report_job(&self, id: Uuid) -> Result<(), ApiError> {
         self.mutate_no_body::<()>(Method::POST, &format!("/reports/jobs/{id}/cancel"), None).await
     }
+    /// Download the last artifact for a report job as raw bytes. The SPA
+    /// can wrap this in a Blob + object URL to trigger a browser download.
+    pub async fn download_report_artifact(&self, id: Uuid) -> Result<Vec<u8>, ApiError> {
+        let builder = RequestBuilder::new(&self.endpoint(&format!(
+            "/reports/jobs/{id}/artifact"
+        )))
+        .method(Method::GET);
+        let builder = self.attach_auth(builder);
+        let req = builder
+            .build()
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let res = self.send_once(req).await?;
+        let status = res.status();
+        if status >= 200 && status < 300 {
+            res.binary()
+                .await
+                .map_err(|e| ApiError::Decode(e.to_string()))
+        } else {
+            let text = res
+                .text()
+                .await
+                .map_err(|e| ApiError::Decode(e.to_string()))?;
+            if let Ok(env) = serde_json::from_str::<ErrorEnvelope>(&text) {
+                Err(ApiError::Api {
+                    status,
+                    code: env.error_code,
+                    message: env.message,
+                    request_id: env.request_id,
+                })
+            } else {
+                Err(ApiError::Http { status, body: text })
+            }
+        }
+    }
 
     // ---- P-C Talent Intelligence (T1–T13) -----------------------------------
 
     pub async fn list_candidates(&self) -> Result<Vec<CandidateListItem>, ApiError> {
-        self.get_with_retry("/talent/candidates").await
+        self.list_candidates_query("").await
+    }
+    /// List candidates with a raw querystring (e.g.
+    /// `q=jane&skills=rust,sql&min_years=3&location=NYC&availability=immediate`).
+    /// Supported keys: `q`, `skills` (CSV), `min_years`, `location`, `major`,
+    /// `min_education`, `availability`, `page`, `page_size`.
+    pub async fn list_candidates_query(
+        &self,
+        query: &str,
+    ) -> Result<Vec<CandidateListItem>, ApiError> {
+        let path = if query.is_empty() {
+            "/talent/candidates".to_string()
+        } else {
+            format!("/talent/candidates?{query}")
+        };
+        self.get_with_retry(&path).await
     }
     pub async fn get_candidate(&self, id: Uuid) -> Result<CandidateDetail, ApiError> {
         self.get_with_retry(&format!("/talent/candidates/{id}")).await
