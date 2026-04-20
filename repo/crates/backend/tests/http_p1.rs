@@ -243,6 +243,24 @@ async fn t_a4_me_returns_identity_for_bearer_holder() {
         .unwrap()
         .iter()
         .any(|p| p == "metric.configure"));
+    // Audit #10 issue #4: /auth/me must return email_mask only, never
+    // plaintext email. Plaintext email is exposed only through the
+    // admin-only U3 endpoint (`GET /api/v1/users/{id}`), so code, docs,
+    // and this test now all agree on the contract.
+    assert!(
+        body["email"].is_null(),
+        "/auth/me must not return plaintext email; got {}",
+        body["email"]
+    );
+    let mask = body["email_mask"].as_str().expect("email_mask must be a string");
+    assert!(
+        mask.contains('@'),
+        "email_mask should still contain '@' to preserve the shape hint; got {mask:?}"
+    );
+    assert!(
+        !mask.contains("a4@example.com"),
+        "email_mask must not leak the full plaintext; got {mask:?}"
+    );
 }
 
 #[actix_web::test]
