@@ -99,3 +99,17 @@ impl OwnerGuard {
 pub fn require_permission(ctx: &AuthContext, code: &str) -> Result<(), AppError> {
     RequirePermission::check(ctx, code)
 }
+
+/// Require *any* of the listed permissions — the caller needs at least one.
+/// Used where a role's capabilities imply a strict superset (e.g.
+/// `talent.manage` → can also do everything `talent.read` can), so the
+/// gate accepts either permission rather than duplicating grants at the
+/// RBAC seed layer (Audit #8 Issue #1).
+pub fn require_any_permission(ctx: &AuthContext, codes: &[&str]) -> Result<(), AppError> {
+    for code in codes {
+        if ctx.permissions.iter().any(|p| p == *code) {
+            return Ok(());
+        }
+    }
+    Err(AppError::Forbidden("missing permission"))
+}

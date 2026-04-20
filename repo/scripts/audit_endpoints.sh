@@ -31,7 +31,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
-SPEC_FILE="${SPEC_FILE:-${REPO_ROOT}/../docs/api-spec.md}"
+SPEC_FILE="${SPEC_FILE:-${REPO_ROOT}/docs/api-spec.md}"
 # Scan the full backend tests tree. P1 collapses every HTTP test into
 # `tests/http_p1.rs`; P-A/P-B/P-C will split tests back out into files
 # under `tests/http/**`. Both layouts are valid inputs to this parity

@@ -94,9 +94,47 @@ async fn cycle_time(
 // ===========================================================================
 // K3 — Funnel
 // ===========================================================================
-async fn funnel(user: AuthUser, state: web::Data<AppState>) -> AppResult<impl Responder> {
+/// Funnel slice query. Audit #8 Issue #2: the funnel is now a real
+/// slice-and-drill surface honoring time (`from`/`to`), spatial
+/// (`site_id`/`department_id` — correlated through
+/// `alert_rules.metric_definition_id → metric_definitions.source_ids →
+/// env_sources`), and categorical (`severity`, accepted as `category` too)
+/// dimensions. All parameters are optional; omitting them returns the
+/// unsliced pipeline, which preserves the legacy contract.
+#[derive(Deserialize)]
+struct FunnelQuery {
+    site_id: Option<Uuid>,
+    department_id: Option<Uuid>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    /// Alert severity (`info|warning|critical`). Also accepted as
+    /// `category` for symmetry with the other KPI slice axes.
+    severity: Option<String>,
+    category: Option<String>,
+}
+
+async fn funnel(
+    user: AuthUser,
+    state: web::Data<AppState>,
+    q: web::Query<FunnelQuery>,
+) -> AppResult<impl Responder> {
     require_permission(&user.0, "kpi.read")?;
-    let resp = repo::funnel(&state.pool).await?;
+    let from_ts = q.from.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+    let to_ts = q.to.map(|d| d.and_hms_opt(23, 59, 59).unwrap().and_utc());
+    let sev = q
+        .severity
+        .as_deref()
+        .or(q.category.as_deref())
+        .filter(|s| ["info", "warning", "critical"].contains(s));
+    let resp = repo::funnel_sliced(
+        &state.pool,
+        q.site_id,
+        q.department_id,
+        from_ts,
+        to_ts,
+        sev,
+    )
+    .await?;
     Ok(HttpResponse::Ok().json(resp))
 }
 

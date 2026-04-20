@@ -139,7 +139,7 @@ Run the broad test gate from the repo root:
 ./run_tests.sh
 ```
 
-`run_tests.sh` enforces (per [`../docs/test-coverage.md`](../docs/test-coverage.md)):
+`run_tests.sh` enforces (per [`docs/test-coverage.md`](docs/test-coverage.md)):
 
 - **Gate 1** — backend cargo tests (terraops-shared + terraops-backend)
   via the `tests` Docker image, executed against a real Postgres. The
@@ -302,7 +302,7 @@ Five canonical roles (names used verbatim in code, DB, and docs):
 - **Regular User** — personal notifications, profile, self-service.
 
 The full actor-to-workflow map, permission codes, and workflow state
-machines are defined in `../docs/design.md`.
+machines are defined in `docs/design.md`.
 
 ## Main Repo Contents
 
@@ -393,7 +393,7 @@ Current-scope disclosures (updated as features land):
   now has a real Trunk + wasm-bindgen stage that replaces the P0
   `dist-scaffold` shell.
 - All **114** REST endpoints are listed authoritatively in
-  `../docs/api-spec.md` (49 P1 + 21 P-A + 31 P-B + 13 P-C, with the full
+  `docs/api-spec.md` (49 P1 + 21 P-A + 31 P-B + 13 P-C, with the full
   breakdown reproduced in the `## Totals` section). P1 shipped the 49
   shared-foundation endpoints; P-A, P-B, and P-C now ship the remaining
   65. The endpoint-parity audit runs in strict mode and reports
@@ -506,3 +506,43 @@ The `develop-1` remediation bundle closes six audit-#7 issues:
   this boundary is documented in the scheduler module.
   (`crates/backend/src/reports/scheduler.rs`,
   `crates/frontend/src/pages.rs`.)
+
+## Audit #8 Remediation — RBAC coherence, funnel slicing, repo-local docs
+
+The `develop-1` audit-#8 remediation bundle closes three high-severity
+findings:
+
+- **Frontend RBAC drift (High).** Admins carry `talent.manage` (a
+  superset of `talent.read`) and Regular Users carry `report.run`
+  without `report.schedule`; both were previously blocked from the
+  real SPA surfaces. A new `PermAnyGate` component applies **OR**
+  semantics at the SPA gate, and a matching backend helper
+  `require_any_permission()` does the same at every talent handler.
+  All talent pages now admit `talent.read || talent.manage`, and the
+  Reports page admits `report.run || report.schedule`. Nav entries and
+  dashboard quick-links were updated to match, so admins see Talent
+  and report-runners see Reports.
+  (`crates/backend/src/auth/extractors.rs`,
+  `crates/backend/src/talent/handlers.rs`,
+  `crates/frontend/src/components.rs`,
+  `crates/frontend/src/pages.rs`.)
+- **KPI funnel slicing (High).** K3 is now a real slice-and-drill
+  surface. The backend `/api/v1/kpi/funnel` accepts `from`, `to`,
+  `site_id`, `department_id`, and `severity` (also accepted as
+  `category` for axis symmetry) and correlates alert events through
+  `alert_rules.metric_definition_id → metric_definitions.source_ids →
+  env_sources` to honor site/department. The SPA KPI workspace adds a
+  severity selector and renders a dedicated sliced-funnel card with
+  per-stage counts, per-stage conversion, and overall conversion.
+  (`crates/backend/src/kpi/handlers.rs`,
+  `crates/backend/src/kpi/repo.rs`,
+  `crates/frontend/src/api.rs`,
+  `crates/frontend/src/pages.rs`.)
+- **Repo stands alone (High).** `docs/design.md` and `docs/api-spec.md`
+  have been brought into the repo alongside the existing
+  `docs/test-coverage.md` so static review works without any
+  parent-directory dependency. Every repo-local reference
+  (`README.md`, `plan.md`, `scripts/audit_endpoints.sh`,
+  `crates/frontend/src/api.rs`) now points at the in-repo `docs/...`
+  paths instead of `../docs/...`.
+

@@ -25,8 +25,8 @@ use yew_router::prelude::*;
 
 use crate::api::ApiClient;
 use crate::components::{
-    DataTable, Layout, PermGate, PlaceholderEmpty, PlaceholderError, PlaceholderLoading,
-    ServerPager,
+    DataTable, Layout, PermAnyGate, PermGate, PlaceholderEmpty, PlaceholderError,
+    PlaceholderLoading, ServerPager,
 };
 use crate::router::Route;
 use crate::state::{AuthContext, AuthState, ToastContext};
@@ -424,7 +424,7 @@ pub mod dashboard {
                                     { "Metric definitions" }
                                 </Link<Route>>
                             }
-                            if state.has_permission("talent.read") {
+                            if state.has_permission("talent.read") || state.has_permission("talent.manage") {
                                 <Link<Route> to={Route::TalentRecommendations} classes={classes!("tx-btn", "tx-btn--ghost")}>
                                     { "Talent recommendations" }
                                 </Link<Route>>
@@ -3096,7 +3096,8 @@ pub mod analyst {
 
     #[function_component(KpiBody)]
     fn kpi_body() -> Html {
-        use terraops_shared::dto::kpi::{AnomalyRow, CycleTimeRow, DrillRow, EfficiencyRow, KpiSummary};
+        use terraops_shared::dto::kpi::{AnomalyRow, CycleTimeRow, DrillRow, EfficiencyRow,
+            FunnelResponse, KpiSummary};
 
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let summary = use_state(|| LoadState::<KpiSummary>::Loading);
@@ -3104,6 +3105,8 @@ pub mod analyst {
         let anomalies = use_state(|| LoadState::<Vec<AnomalyRow>>::Loading);
         let efficiency = use_state(|| LoadState::<Vec<EfficiencyRow>>::Loading);
         let drill = use_state(|| LoadState::<Vec<DrillRow>>::Loading);
+        // Audit #8 Issue #2: real slice-and-drill funnel surface.
+        let funnel = use_state(|| LoadState::<FunnelResponse>::Loading);
 
         // Filter form state (ISO-8601 timestamps + slicing axes). Empty
         // fields = unfiltered. Audit #5 Issue #3: the KPI workspace now
@@ -3115,6 +3118,8 @@ pub mod analyst {
         let site_id = use_state(String::new);
         let department_id = use_state(String::new);
         let category = use_state(String::new);
+        // Severity is an alert-only slice axis consumed by the funnel.
+        let severity = use_state(String::new);
         // Audit #6 Issue #2: replace raw site/department UUID text entry
         // with live selectors sourced from the ref-data endpoints.
         let sites = use_state(|| Vec::<terraops_shared::dto::ref_data::SiteRef>::new());
@@ -3155,6 +3160,31 @@ pub mod analyst {
             }
         };
 
+        // Funnel-specific query string: drops the generic SliceQuery
+        // `category` and instead passes `severity` (aliased as `category`
+        // on the backend so it also surfaces through the same slice API).
+        let build_funnel_qs = {
+            let from_ts = from_ts.clone();
+            let to_ts = to_ts.clone();
+            let site_id = site_id.clone();
+            let department_id = department_id.clone();
+            let severity = severity.clone();
+            move || -> String {
+                let mut parts = Vec::new();
+                let f = (*from_ts).trim().to_string();
+                let t = (*to_ts).trim().to_string();
+                let s = (*site_id).trim().to_string();
+                let d = (*department_id).trim().to_string();
+                let sv = (*severity).trim().to_string();
+                if !f.is_empty() { parts.push(format!("from={f}")); }
+                if !t.is_empty() { parts.push(format!("to={t}")); }
+                if !s.is_empty() { parts.push(format!("site_id={s}")); }
+                if !d.is_empty() { parts.push(format!("department_id={d}")); }
+                if !sv.is_empty() { parts.push(format!("severity={sv}")); }
+                parts.join("&")
+            }
+        };
+
         let reload = {
             let auth = auth.clone();
             let summary = summary.clone();
@@ -3162,7 +3192,9 @@ pub mod analyst {
             let anomalies = anomalies.clone();
             let efficiency = efficiency.clone();
             let drill = drill.clone();
+            let funnel = funnel.clone();
             let build_qs = build_qs.clone();
+            let build_funnel_qs = build_funnel_qs.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let summary = summary.clone();
@@ -3170,12 +3202,15 @@ pub mod analyst {
                 let anomalies = anomalies.clone();
                 let efficiency = efficiency.clone();
                 let drill = drill.clone();
+                let funnel = funnel.clone();
                 let qs = build_qs();
+                let fqs = build_funnel_qs();
                 summary.set(LoadState::Loading);
                 cycle.set(LoadState::Loading);
                 anomalies.set(LoadState::Loading);
                 efficiency.set(LoadState::Loading);
                 drill.set(LoadState::Loading);
+                funnel.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.kpi_summary().await {
                         Ok(v) => summary.set(LoadState::Loaded(v)),
@@ -3196,6 +3231,10 @@ pub mod analyst {
                     match api.kpi_drill_page(&qs).await {
                         Ok(p) => drill.set(LoadState::Loaded(p.items)),
                         Err(e) => drill.set(LoadState::Failed(e.user_facing())),
+                    }
+                    match api.kpi_funnel_query(&fqs).await {
+                        Ok(v) => funnel.set(LoadState::Loaded(v)),
+                        Err(e) => funnel.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
@@ -3276,6 +3315,21 @@ pub mod analyst {
                             placeholder="e.g. cycle_time"
                             oninput={bind_input(category.clone())}/>
                     </label>
+                    <label class="tx-field">
+                        <span>{ "Severity (funnel)" }</span>
+                        <select class="tx-input" onchange={{
+                            let s = severity.clone();
+                            Callback::from(move |e: Event| {
+                                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                                s.set(t.value());
+                            })
+                        }}>
+                            <option value="" selected={(*severity).is_empty()}>{ "— any severity —" }</option>
+                            <option value="info"     selected={&*severity == "info"}>{ "info" }</option>
+                            <option value="warning"  selected={&*severity == "warning"}>{ "warning" }</option>
+                            <option value="critical" selected={&*severity == "critical"}>{ "critical" }</option>
+                        </select>
+                    </label>
                     <div class="tx-form__actions">
                         <button type="submit" class="tx-btn">{ "Apply" }</button>
                         <button type="button" class="tx-btn tx-btn--ghost" onclick={{
@@ -3284,6 +3338,7 @@ pub mod analyst {
                             let site_id = site_id.clone();
                             let department_id = department_id.clone();
                             let category = category.clone();
+                            let severity = severity.clone();
                             let reload = reload.clone();
                             Callback::from(move |_: MouseEvent| {
                                 from_ts.set(String::new());
@@ -3291,6 +3346,7 @@ pub mod analyst {
                                 site_id.set(String::new());
                                 department_id.set(String::new());
                                 category.set(String::new());
+                                severity.set(String::new());
                                 reload.emit(());
                             })
                         }}>{ "Clear" }</button>
@@ -3436,10 +3492,40 @@ pub mod analyst {
             }
         };
 
+        let render_funnel = |state: &LoadState<FunnelResponse>| match state {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! { <p class="tx-error">{ m.clone() }</p> },
+            LoadState::Loaded(resp) => {
+                let headers = vec![
+                    AttrValue::from("Stage"),
+                    AttrValue::from("Count"),
+                    AttrValue::from("Conversion"),
+                ];
+                let trows: Vec<Vec<Html>> = resp.stages.iter().map(|s| vec![
+                    html! { <span class="tx-chip">{ s.stage.clone() }</span> },
+                    html! { { s.count } },
+                    html! { { format!("{:.1}%", s.conversion_pct) } },
+                ]).collect();
+                html! {
+                    <>
+                        <p class="tx-subtle">
+                            { format!("Overall conversion: {:.1}%", resp.overall_conversion_pct) }
+                        </p>
+                        <DataTable headers={headers} rows={trows}
+                                   empty_label="No alert events in this slice."/>
+                    </>
+                }
+            }
+        };
+
         html! {
             <>
                 { filters }
                 { summary_cards }
+                <section class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Funnel (sliced)" }</h2>
+                    { render_funnel(&*funnel) }
+                </section>
                 <section class="tx-card">
                     <h2 class="tx-title tx-title--sm">{ "Cycle time" }</h2>
                     { render_cycle(&*cycle) }
@@ -3689,9 +3775,12 @@ pub mod analyst {
     pub fn reports() -> Html {
         html! {
             <Layout title="Report jobs" subtitle="Scheduled KPI + env exports.">
-                <PermGate permission="report.schedule">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("report.schedule"),
+                    AttrValue::from("report.run"),
+                ]}>
                     <ReportsBody/>
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -4283,9 +4372,12 @@ pub mod recruiter {
     pub fn candidates() -> Html {
         html! {
             <Layout title="Candidates" subtitle="Talent pool — search, view, add to watchlist.">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <CandidatesBody/>
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -4552,9 +4644,12 @@ pub mod recruiter {
         let id = props.id;
         html! {
             <Layout title="Candidate" subtitle="Full profile + thumb feedback (audited).">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <CandidateDetailBody {id} />
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -4665,9 +4760,12 @@ pub mod recruiter {
     pub fn roles() -> Html {
         html! {
             <Layout title="Open roles" subtitle="Recruiter-managed job requisitions.">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <RolesBody/>
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -4894,9 +4992,12 @@ pub mod recruiter {
     pub fn recommendations() -> Html {
         html! {
             <Layout title="Recommendations" subtitle="Cold-start by completeness → blended scoring after 10+ feedback.">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <RecommendationsBody/>
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -5027,9 +5128,12 @@ pub mod recruiter {
     pub fn weights() -> Html {
         html! {
             <Layout title="Ranking weights" subtitle="Personal tuning — applies to your ranked lists only.">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <WeightsBody/>
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -5128,9 +5232,12 @@ pub mod recruiter {
     pub fn watchlists() -> Html {
         html! {
             <Layout title="Watchlists" subtitle="Per-recruiter pinned candidate sets.">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <WatchlistsBody/>
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }
@@ -5249,9 +5356,12 @@ pub mod recruiter {
         let id = props.id;
         html! {
             <Layout title="Watchlist" subtitle="Pinned candidates for this watchlist.">
-                <PermGate permission="talent.read">
+                <PermAnyGate permissions={vec![
+                    AttrValue::from("talent.read"),
+                    AttrValue::from("talent.manage"),
+                ]}>
                     <WatchlistDetailBody {id} />
-                </PermGate>
+                </PermAnyGate>
             </Layout>
         }
     }

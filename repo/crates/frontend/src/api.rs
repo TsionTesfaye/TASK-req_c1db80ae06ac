@@ -1,6 +1,6 @@
 //! Typed API client for every P1 backend surface.
 //!
-//! Design requirements (from `../docs/design.md §Budget rules`):
+//! Design requirements (from `docs/design.md §Budget rules`):
 //!   * every request has a hard 3-second timeout,
 //!   * idempotent GETs are retried exactly once on network error or 5xx,
 //!   * non-idempotent verbs (POST/PATCH/PUT/DELETE) are never retried,
@@ -752,6 +752,13 @@ impl ApiClient {
     }
     pub async fn kpi_funnel(&self) -> Result<FunnelResponse, ApiError> {
         self.get_with_retry("/kpi/funnel").await
+    }
+    /// Sliced variant (Audit #8 Issue #2): honors site/department/time/
+    /// severity slicing just like the other KPI endpoints.
+    pub async fn kpi_funnel_query(&self, query: &str) -> Result<FunnelResponse, ApiError> {
+        let path = if query.is_empty() { "/kpi/funnel".to_string() }
+                   else { format!("/kpi/funnel?{query}") };
+        self.get_with_retry::<FunnelResponse>(&path).await
     }
     pub async fn kpi_anomalies_page(
         &self,

@@ -225,21 +225,75 @@ pub async fn cycle_time(
 // ---------------------------------------------------------------------------
 
 pub async fn funnel(pool: &PgPool) -> AppResult<FunnelResponse> {
-    let (total,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*)::BIGINT FROM alert_events",
-    )
-    .fetch_one(pool)
-    .await?;
-    let (acked,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*)::BIGINT FROM alert_events WHERE acked_at IS NOT NULL",
-    )
-    .fetch_one(pool)
-    .await?;
-    let (resolved,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*)::BIGINT FROM alert_events WHERE resolved_at IS NOT NULL",
-    )
-    .fetch_one(pool)
-    .await?;
+    funnel_sliced(pool, None, None, None, None, None).await
+}
+
+/// Funnel with real slice axes — site/department (correlated through
+/// alert_rules.metric_definition_id → metric_definitions.source_ids →
+/// env_sources), time window (fired_at range), and severity. Audit #8
+/// Issue #2.
+pub async fn funnel_sliced(
+    pool: &PgPool,
+    site_id: Option<Uuid>,
+    department_id: Option<Uuid>,
+    from_ts: Option<chrono::DateTime<chrono::Utc>>,
+    to_ts: Option<chrono::DateTime<chrono::Utc>>,
+    severity: Option<&str>,
+) -> AppResult<FunnelResponse> {
+    // All three counts share the same slice predicates; we parameterise
+    // the `acked_at`/`resolved_at` stage filter inline so the plan can
+    // be reused across stages without rebuilding the SQL.
+    let build_sql = |extra_predicate: &str| -> String {
+        format!(
+            "SELECT COUNT(*)::BIGINT FROM alert_events ae \
+             JOIN alert_rules ar ON ar.id = ae.rule_id \
+             WHERE ($1::TIMESTAMPTZ IS NULL OR ae.fired_at >= $1) \
+               AND ($2::TIMESTAMPTZ IS NULL OR ae.fired_at <= $2) \
+               AND ($3::TEXT IS NULL OR ar.severity = $3) \
+               AND ($4::UUID IS NULL OR EXISTS ( \
+                    SELECT 1 FROM metric_definitions md \
+                    JOIN env_sources es ON es.id = ANY(md.source_ids) \
+                    WHERE md.id = ar.metric_definition_id AND es.site_id = $4 \
+               )) \
+               AND ($5::UUID IS NULL OR EXISTS ( \
+                    SELECT 1 FROM metric_definitions md \
+                    JOIN env_sources es ON es.id = ANY(md.source_ids) \
+                    WHERE md.id = ar.metric_definition_id AND es.department_id = $5 \
+               )) \
+               {}",
+            extra_predicate
+        )
+    };
+
+    let sev_owned = severity.map(|s| s.to_string());
+    let sql_total = build_sql("");
+    let sql_acked = build_sql("AND ae.acked_at IS NOT NULL");
+    let sql_resolved = build_sql("AND ae.resolved_at IS NOT NULL");
+
+    let (total,): (i64,) = sqlx::query_as(&sql_total)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(sev_owned.as_deref())
+        .bind(site_id)
+        .bind(department_id)
+        .fetch_one(pool)
+        .await?;
+    let (acked,): (i64,) = sqlx::query_as(&sql_acked)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(sev_owned.as_deref())
+        .bind(site_id)
+        .bind(department_id)
+        .fetch_one(pool)
+        .await?;
+    let (resolved,): (i64,) = sqlx::query_as(&sql_resolved)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(sev_owned.as_deref())
+        .bind(site_id)
+        .bind(department_id)
+        .fetch_one(pool)
+        .await?;
 
     let pct = |n: i64| -> f64 {
         if total > 0 {

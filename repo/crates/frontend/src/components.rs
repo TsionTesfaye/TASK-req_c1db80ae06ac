@@ -119,7 +119,10 @@ pub fn nav() -> Html {
                     }
                 }
 
-                if has("talent.read") {
+                // Audit #8 Issue #1: Administrator holds `talent.manage`
+                // but not `talent.read`; treat manage as a superset so
+                // admins also see the Talent nav section.
+                if has("talent.read") || has("talent.manage") {
                     <div class="tx-nav-section">{ "Talent" }</div>
                     <NavItem to={Route::TalentCandidates} label="Candidates" />
                     <NavItem to={Route::TalentRoles} label="Open roles" />
@@ -221,6 +224,50 @@ pub fn perm_gate(props: &PermGateProps) -> Html {
                 <h2 class="tx-title">{ "Not authorized" }</h2>
                 <p class="tx-subtle">
                     { format!("Your role does not include the \"{}\" permission.", props.permission) }
+                </p>
+            </div>
+        }
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct PermAnyGateProps {
+    /// Accept the user if they hold *any* of these permission codes.
+    /// Used where backend-side RBAC treats one permission as a strict
+    /// superset of another (e.g. `talent.manage` implies `talent.read`,
+    /// `report.schedule` implies `report.run`). Audit #8 Issue #1.
+    pub permissions: Vec<AttrValue>,
+    pub children: Children,
+    #[prop_or_default]
+    pub fallback: Option<Html>,
+}
+
+#[function_component(PermAnyGate)]
+pub fn perm_any_gate(props: &PermAnyGateProps) -> Html {
+    let auth = use_context::<AuthContext>().expect("AuthContext");
+    let Some(state) = auth.state.as_ref() else {
+        return html! { <Redirect<Route> to={Route::Login} /> };
+    };
+    let ok = props
+        .permissions
+        .iter()
+        .any(|p| state.has_permission(p.as_str()));
+    if ok {
+        html! { <>{ for props.children.iter() }</> }
+    } else if let Some(fb) = &props.fallback {
+        fb.clone()
+    } else {
+        let listed = props
+            .permissions
+            .iter()
+            .map(|p| format!("\"{}\"", p.as_str()))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        html! {
+            <div class="tx-card tx-card--warn">
+                <h2 class="tx-title">{ "Not authorized" }</h2>
+                <p class="tx-subtle">
+                    { format!("Your role does not include the {} permission.", listed) }
                 </p>
             </div>
         }

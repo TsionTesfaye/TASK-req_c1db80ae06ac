@@ -1,0 +1,262 @@
+# TerraOps — Test Coverage Contract
+
+This file is the repo-enforceable coverage contract. Two gates in
+`run_tests.sh` read from it and two human-readable sections explain
+what is proven and what is explicitly not.
+
+> **Gate 1 and Gate 2 measure different things.** They are not the
+> same kind of number and must never be conflated.
+>
+> | Gate | What it measures | Unit | Floor | Current |
+> |---|---|---|---|---|
+> | **Gate 1** (backend) | native-Rust source lines executed by tests | `lines_covered / lines_total × 100` (real **line coverage**) | 94 | ~94.83 % |
+> | **Gate 2** (frontend) | requirement matrix rows with grep-verifiable evidence | `covered_rows / total_rows × 100` (**Frontend Verification Matrix score**, NOT line coverage) | 90 | 100 % (53/53 rows satisfied) |
+>
+> The frontend 100 is a **verification-matrix score**, not a
+> line-coverage percentage. Anywhere in this repo that it is reported
+> without the explicit qualifier "Frontend Verification Matrix score"
+> is a bug and should be fixed.
+
+- **Gate 1 (backend / shared — real line coverage)**
+  Native Rust line coverage over `crates/shared/**` + `crates/backend/src/**`
+  measured end-to-end with `cargo llvm-cov`, floor `GATE1_LINE_FLOOR=94`.
+  Currently measured at ~94.83 %. This IS line coverage, in the
+  conventional sense: `lines_covered / lines_total × 100`.
+
+- **Gate 2 (frontend — Frontend Verification Matrix, FVM)**
+
+  A requirement-row **verification-matrix score** enforced by
+  `scripts/frontend_verify.sh`. The score is
+  `covered_rows / total_rows × 100`.
+
+  > **This is NOT line coverage.** It is not the percentage of
+  > `crates/frontend/src/**` source lines executed by tests. Wasm
+  > source-based line coverage is not the authoritative frontend
+  > proof on this toolchain — see §Why the frontend is not measured
+  > by wasm source-based line coverage below for the exact
+  > toolchain blockers observed. The FVM is what replaced that
+  > would-be line-coverage gate as the authoritative frontend proof.
+
+  - **Floor:** `GATE2_FVM_FLOOR=90`.
+  - **Current measured value:** **100% Frontend Verification Matrix
+    score (53/53 rows satisfied)**. This exact phrasing is the
+    canonical way to report it. Never shorten it to "100% frontend
+    coverage".
+
+  **What the 100 % score actually means.** 53 of 53 requirement
+  rows in the matrix below (authoritative, in this file) have a
+  grep-verifiable piece of evidence that exists in the codebase
+  exactly as declared. Each row declares one of three evidence
+  kinds:
+
+  - `wasm_bindgen_test` — a `#[wasm_bindgen_test]` function with the
+    declared name exists in `crates/frontend/src/**/*.rs`.
+  - `playwright` — a non-empty spec file exists at
+    `e2e/specs/<name>.spec.ts`.
+  - `route` — a `Route::<Variant>` enum variant with the declared
+    name exists in `crates/frontend/src/router.rs`.
+
+  `scripts/frontend_verify.sh` mechanically verifies every row, and
+  a `covered` row whose evidence is missing or misspelled is a HARD
+  failure, not a silent zero-score row — so dishonest greens are
+  impossible and the score cannot be inflated by stale rows.
+
+  **Gate 2 is layered alongside — not a replacement for — real test
+  execution.** Gate 2 itself runs in two halves:
+
+  - **Gate 2a** runs the actual `wasm-bindgen-test` suite for
+    `terraops-frontend` via `wasm-bindgen-test-runner` in Node mode
+    and fails on any test failure (real regression gate on frontend
+    logic: auth, api client, toast, notifications, router).
+  - **Gate 2b** runs `scripts/frontend_verify.sh` against this file
+    and enforces `GATE2_FVM_FLOOR=90`.
+
+  The 7 Playwright specs that appear as matrix rows also run under
+  the separate **Flow gate** (Playwright specs against the live
+  `app` service on the compose network). A matrix row pointing at a
+  Playwright spec is therefore backed by the spec's real end-to-end
+  execution in the flow gate, not just its file existence.
+
+  **What the FVM score explicitly does NOT prove.**
+
+  1. It does not prove that every source line in
+     `crates/frontend/src/**` is executed by a test. No
+     statement-level wasm line count is enforced by this gate.
+  2. A row's score is only as strong as the evidence declared. A
+     trivial `#[wasm_bindgen_test]` that only touches a helper still
+     scores 1. Reviewers should read the `Evidence` column together
+     with the `Requirement` column.
+  3. Playwright specs prove end-to-end behavior for the concrete
+     flow they script; they do not prove that every component they
+     transit is individually unit-tested.
+  4. `route` evidence only proves that a `Route::<Variant>` enum
+     variant is declared in `router.rs`. It does not prove the
+     route is reachable from the nav, linked from any page, or
+     rendered correctly. Route-kind rows are minimum-floor evidence
+     for the router's type-level shape and nothing more; the
+     per-role Playwright specs (FVM-F2/G2/H2/I2) and the nav-shape
+     wasm tests (FVM-F1/G1/H1/I1) carry the real routing proof.
+
+## Why the frontend is not measured by wasm source-based line coverage
+
+The earlier plan attempted `-C instrument-coverage` on
+`wasm32-unknown-unknown` and aggregated `.profraw` files with `grcov`.
+That path is not achievable on the pinned stable toolchain used by
+`Dockerfile.tests` (`rust:1.88-bookworm`). The exact observed blocker:
+
+- `cargo test --target wasm32-unknown-unknown -p terraops-frontend`
+  with `RUSTFLAGS="-C instrument-coverage"` fails at compile time for
+  every crate with `error[E0463]: can't find crate for 'profiler_builtins'`
+  — rustc's `wasm32-unknown-unknown` sysroot (`rust-std-wasm32-unknown-unknown`)
+  does not ship the `libclang_rt.profile` runtime.
+- The standard `-Z build-std=std,panic_abort,profiler_builtins
+  -Z build-std-features=profiler` workaround requires a real nightly
+  rustc; under stable 1.88 with `RUSTC_BOOTSTRAP=1` the rust-src copy
+  of `core` fails to build (4754 errors against portable-simd /
+  const-stdlib features).
+- `terraops-frontend` is declared bin-only (`[[bin]]`, no `[lib]`)
+  and every source file takes a hard dependency on `yew`, `web-sys`,
+  `gloo-net`, `gloo-storage`, `gloo-timers` at the type level. The
+  crate cannot cross-compile to a native target for coverage without
+  a material re-architecture that would split wasm-only surfaces
+  behind `cfg(target_arch = "wasm32")`.
+
+All three workarounds are toolchain-level changes that fall outside
+Gate 2's bounded scope. Rather than ship a dishonest "line coverage"
+number that does not reflect the wasm runtime, Gate 2 enforces a
+matrix-based 90%+ **verification-matrix score** whose evidence is
+grep-checked against real test code and Playwright specs. The score
+therefore replaces source-line coverage as the authoritative frontend
+proof, but it is a different kind of measurement and must be read as
+such — not as line coverage.
+
+## Evidence kinds (what can appear in the matrix)
+
+Each matrix row has an **Evidence** token whose existence is
+mechanically verified by `scripts/frontend_verify.sh`:
+
+| Kind | Verified by |
+|---|---|
+| `wasm_bindgen_test` | grep for `fn <token>` inside `crates/frontend/src/**/*.rs` — the function must exist and carry a `#[wasm_bindgen_test]` attribute. |
+| `playwright` | file `e2e/specs/<token>` exists and is non-empty. |
+| `route` | grep for `Route::<token>` inside `crates/frontend/src/router.rs`. |
+
+Rows marked **covered** whose evidence fails the existence check are
+HARD fails in `scripts/frontend_verify.sh` — that blocks the gate
+from passing on stale or misspelled rows (no dishonest "green" from
+a typo).
+
+## Scoring rule
+
+```
+score = rows where Status == "covered" AND evidence verified
+total = rows with Status in {"covered", "deferred"}
+Gate 2 passes iff (score / total) * 100 >= GATE2_FVM_FLOOR (default 90).
+```
+
+`deferred` rows count toward the denominator but not the numerator;
+they are the honest escape hatch for known gaps. Every `deferred`
+row must carry a prose reason.
+
+---
+
+## Frontend Verification Matrix
+
+The table below is authoritative. `scripts/frontend_verify.sh` parses
+every row whose first column is `FVM-*`.
+
+| ID | Family | Requirement | Evidence Kind | Evidence | Status | Notes |
+|---|---|---|---|---|---|---|
+| FVM-A1 | auth | AuthState.has_permission positive + negative | wasm_bindgen_test | auth_state_has_permission_positive_and_negative | covered | pure logic |
+| FVM-A2 | auth | AuthState.has_role for every Role variant | wasm_bindgen_test | auth_state_has_role_positive_and_negative | covered | pure logic |
+| FVM-A3 | auth | AuthState.is_admin reflects Administrator role | wasm_bindgen_test | auth_state_is_admin_reflects_role | covered | pure logic |
+| FVM-A4 | auth | AuthState.display_name / user_id accessors | wasm_bindgen_test | auth_state_accessors_return_expected_fields | covered | pure logic |
+| FVM-A5 | auth | AuthContext.api() forwards token when signed in | wasm_bindgen_test | auth_context_api_propagates_token_when_signed_in | covered | pure logic |
+| FVM-A6 | auth | AuthContext anonymous path when signed out | wasm_bindgen_test | auth_context_api_is_anonymous_when_signed_out | covered | pure logic |
+| FVM-A7 | auth | Login flow end-to-end (real HTTPS) | playwright | login.spec.ts | covered | existing spec |
+| FVM-B1 | api | 3s timeout fires for slow future | wasm_bindgen_test | timeout_fires_for_slow_future | covered | existing |
+| FVM-B2 | api | timeout does not fire for fast future | wasm_bindgen_test | timeout_does_not_fire_for_fast_future | covered | existing |
+| FVM-B3 | api | user_facing mapping for core codes | wasm_bindgen_test | api_error_user_facing_maps_codes | covered | existing |
+| FVM-B4 | api | is_unauthenticated for both auth codes | wasm_bindgen_test | api_error_unauthenticated_detects_both_codes | covered | existing |
+| FVM-B5 | api | bearer token attachment | wasm_bindgen_test | client_attaches_token | covered | existing |
+| FVM-B6 | api | user_facing covers every ErrorCode | wasm_bindgen_test | api_error_user_facing_covers_all_error_codes | covered | new |
+| FVM-B7 | api | validation + conflict forward server message | wasm_bindgen_test | api_error_validation_and_conflict_forward_server_message | covered | new |
+| FVM-B8 | api | user_facing for Http + Decode variants | wasm_bindgen_test | api_error_user_facing_for_http_and_decode_variants | covered | new |
+| FVM-B9 | api | is_unauthenticated false for non-auth errors | wasm_bindgen_test | api_error_unauthenticated_false_for_validation_errors | covered | new |
+| FVM-B10 | api | ApiClient::with_token(None) anonymous | wasm_bindgen_test | api_client_with_token_none_is_anonymous | covered | new |
+| FVM-B11 | api | ApiClient::default / ::new are anonymous | wasm_bindgen_test | api_client_default_is_anonymous | covered | new |
+| FVM-B12 | api | ApiClient clone preserves token | wasm_bindgen_test | api_client_clone_preserves_token | covered | new |
+| FVM-B13 | api | ApiError equality + discriminants | wasm_bindgen_test | api_error_equality_semantics | covered | new |
+| FVM-B14 | api | Budget constants match design.md (3000ms / 1 retry / /api/v1) | wasm_bindgen_test | api_budget_constants_match_design_contract | covered | new |
+| FVM-B15 | api | select_timeout returns Some on fast future | wasm_bindgen_test | select_timeout_returns_some_when_future_wins | covered | new |
+| FVM-B16 | api | select_timeout returns None on slow future | wasm_bindgen_test | select_timeout_returns_none_when_timer_wins | covered | new |
+| FVM-B17 | api | ErrorEnvelope serde round-trip | wasm_bindgen_test | error_envelope_json_round_trip | covered | new |
+| FVM-C1 | toast | ToastLevel.class for every variant | wasm_bindgen_test | toast_level_class_maps_variants | covered | new |
+| FVM-C2 | toast | Toast struct equality | wasm_bindgen_test | toast_struct_equality | covered | new |
+| FVM-C3 | toast | ToastLevel Copy + Eq | wasm_bindgen_test | toast_level_copy_and_eq | covered | new |
+| FVM-D1 | notif | NotificationsSnapshot default zero | wasm_bindgen_test | notifications_snapshot_default_is_zero | covered | new |
+| FVM-D2 | notif | NotificationsSnapshot equality | wasm_bindgen_test | notifications_snapshot_equality | covered | new |
+| FVM-D3 | notif | NotificationsContext.snapshot readable | wasm_bindgen_test | notifications_context_snapshot_is_readable | covered | new |
+| FVM-D4 | notif | alert → notification flow end-to-end | playwright | alert_to_notification.spec.ts | covered | existing |
+| FVM-E1 | router | Route equality + clone | wasm_bindgen_test | route_equality_and_clone | covered | new |
+| FVM-E2 | router | Route with Uuid param equality | wasm_bindgen_test | route_with_uuid_param_equality | covered | new |
+| FVM-E3 | router | NotFound + Root are distinct | wasm_bindgen_test | route_not_found_and_root_are_distinct | covered | new |
+| FVM-E4 | router | Admin route variants are distinct | wasm_bindgen_test | route_admin_variants_are_distinct | covered | new |
+| FVM-E5 | router | Monitoring route variants are distinct | wasm_bindgen_test | route_monitoring_variants_are_distinct | covered | new |
+| FVM-E6 | router | Data steward route variants are distinct | wasm_bindgen_test | route_data_steward_variants_are_distinct | covered | new |
+| FVM-E7 | router | Analyst route variants are distinct | wasm_bindgen_test | route_analyst_variants_are_distinct | covered | new |
+| FVM-E8 | router | Talent route variants are distinct | wasm_bindgen_test | route_talent_variants_are_distinct | covered | new |
+| FVM-E9 | router | Route Debug formatting | wasm_bindgen_test | route_debug_formatting_includes_variant_name | covered | new |
+| FVM-E10 | router | ProductDetail route variant exists | route | ProductDetail | covered | router.rs |
+| FVM-E11 | router | TalentCandidateDetail route variant exists | route | TalentCandidateDetail | covered | router.rs |
+| FVM-E12 | router | MetricDefinitionDetail route variant exists | route | MetricDefinitionDetail | covered | router.rs |
+| FVM-F1 | data_steward | Nav permissions shape (product.read / manage) | wasm_bindgen_test | data_steward_nav_permissions_shape | covered | new |
+| FVM-F2 | data_steward | Products + imports flow end-to-end | playwright | products_import.spec.ts | covered | existing |
+| FVM-G1 | analyst | Nav permissions shape (env/metric/kpi/alert/report) | wasm_bindgen_test | analyst_nav_permissions_shape | covered | new |
+| FVM-G2 | analyst | Metric + report flow end-to-end | playwright | analyst_metric_report.spec.ts | covered | existing |
+| FVM-H1 | recruiter | Nav permissions shape (talent.read) | wasm_bindgen_test | recruiter_nav_permissions_shape | covered | new |
+| FVM-H2 | recruiter | Talent recommendations flow end-to-end | playwright | talent_recommendations.spec.ts | covered | existing |
+| FVM-I1 | admin | Nav permissions shape (user / allowlist / mtls / retention / monitoring) | wasm_bindgen_test | admin_nav_permissions_shape | covered | new |
+| FVM-I2 | admin | Admin ops flow end-to-end | playwright | admin_ops.spec.ts | covered | existing |
+| FVM-J1 | state_model | PermGate three-branch shape (unauth / denied / authorized) | wasm_bindgen_test | perm_gate_unauth_and_authz_shapes | covered | new |
+| FVM-J2 | state_model | Offline / loading / empty / error states | playwright | offline_states.spec.ts | covered | existing |
+
+### Summary (prose)
+
+- **53 rows** above, **0 `deferred`**, **53 `covered`** → current
+  Frontend Verification Matrix score **100% (53/53 rows satisfied)**.
+  This is a requirement-row score, not wasm source-line coverage.
+- The 53 rows span 10 families: auth gating, API-client error/retry/budget
+  semantics, toast/notification plumbing, router variants, and one
+  nav-permission-shape row plus one Playwright flow per role family.
+- Playwright specs contribute 7 rows (`login.spec.ts`,
+  `alert_to_notification.spec.ts`, `products_import.spec.ts`,
+  `analyst_metric_report.spec.ts`, `talent_recommendations.spec.ts`,
+  `admin_ops.spec.ts`, `offline_states.spec.ts`). Every recruiter/
+  data-steward/analyst/admin page family has at least one wasm-bindgen
+  row **plus** one Playwright row.
+- **Static verification (wasm-bindgen unit + logic tests): 43 rows.**
+- **Playwright flow verification: 7 rows.**
+- **Router static enumeration: 3 rows.**
+
+## Limitations (explicit, honest)
+
+1. Gate 2 does not measure statement-level line coverage of wasm
+   code, and the reported FVM score must never be read as line
+   coverage. The upstream blocker on `profiler_builtins` for wasm32
+   means no honest wasm line-coverage number is available today. The
+   matrix is the substitute proof: every requirement family has at
+   least one grep-verifiable test or Playwright spec touching its
+   real code path, but satisfaction is row-level, not line-level.
+2. DOM-rendered behavior (form submit, in-page navigation, loading
+   spinner visibility, toast rendering) is intentionally verified by
+   Playwright, not by wasm-bindgen-test — wasm-bindgen-test in Node
+   mode has no DOM, and a DOM-mode runner would require pinned
+   Chromium which currently belongs to the flow gate.
+3. `PermGate`'s redirect path is proved via the state shape it walks
+   (wasm test) plus the `login.spec.ts` flow (Playwright). Rendering
+   the `Redirect<Route>` component itself requires yew + DOM and is
+   considered covered by the flow gate.
+4. Ownership: this file is the single source of truth for the
+   frontend verification contract. Editing the matrix without
+   adding the corresponding test will fail `scripts/frontend_verify.sh`.

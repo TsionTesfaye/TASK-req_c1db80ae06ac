@@ -1,6 +1,6 @@
 # Implementation Plan — TerraOps
 
-Definitive repo-local execution checklist. Derived from `../docs/design.md`; endpoint inventory in `../docs/api-spec.md`; test mapping in `../docs/test-coverage.md`.
+Definitive repo-local execution checklist. Derived from `docs/design.md`; endpoint inventory in `docs/api-spec.md`; test mapping in `docs/test-coverage.md`.
 
 ## Status Markers
 
@@ -48,7 +48,7 @@ Definitive repo-local execution checklist. Derived from `../docs/design.md`; end
     - Gate 2 (**redesigned — Frontend Verification Matrix**): (2a) `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown -p terraops-frontend --no-fail-fast` (must be green; 43/43 tests today), then (2b) `scripts/frontend_verify.sh` parses the 53-row matrix in `docs/test-coverage.md` and enforces `GATE2_FVM_FLOOR=90`. Current measurement: **100% Frontend Verification Matrix score (53/53 rows satisfied)** — this is a verification-matrix score (`covered_rows / total_rows × 100`), not a line-coverage percentage, and must never be reported as "100% frontend coverage" without the explicit FVM qualifier. Wasm source-based line coverage is **not** the authoritative frontend proof: `profiler_builtins` is not shipped in `rust-std-wasm32-unknown-unknown` for stable rust 1.88, and the `-Z build-std` workaround requires a real nightly rustc. Exact observed blocker evidence is recorded in `docs/test-coverage.md §Why the frontend is not measured by wasm source-based line coverage`.
     - Gate 3: `scripts/audit_endpoints.sh` (mode decided by presence of `crates/backend/tests/.audit_strict`)
     - Flow: `npx --prefix e2e playwright test` (all 7 specs must pass)
-  - **Authoritative threshold sentence** (identical wording in `../docs/design.md` and `docs/test-coverage.md`): The 94% line-coverage floor applies only to `crates/shared` + `crates/backend` (Rust native code). The `crates/frontend` Yew/WASM crate is enforced via the **Frontend Verification Matrix** at `GATE2_FVM_FLOOR=90` — a **verification-matrix score**, not a line-coverage percentage: `covered_rows / total_rows × 100 ≥ 90`. Wasm line coverage is not used as the authoritative frontend proof due to the documented upstream `profiler_builtins` gap on `wasm32-unknown-unknown`. Playwright specs contribute rows to the FVM and also run as the flow gate.
+  - **Authoritative threshold sentence** (identical wording in `docs/design.md` and `docs/test-coverage.md`): The 94% line-coverage floor applies only to `crates/shared` + `crates/backend` (Rust native code). The `crates/frontend` Yew/WASM crate is enforced via the **Frontend Verification Matrix** at `GATE2_FVM_FLOOR=90` — a **verification-matrix score**, not a line-coverage percentage: `covered_rows / total_rows × 100 ≥ 90`. Wasm line coverage is not used as the authoritative frontend proof due to the documented upstream `profiler_builtins` gap on `wasm32-unknown-unknown`. Playwright specs contribute rows to the FVM and also run as the flow gate.
 - **Required scaffold files and scripts**:
   - `Cargo.toml` (workspace), `Cargo.lock`
   - `docker-compose.yml`, `Dockerfile.app`, `Dockerfile.tests` (no `Dockerfile.frontend`)

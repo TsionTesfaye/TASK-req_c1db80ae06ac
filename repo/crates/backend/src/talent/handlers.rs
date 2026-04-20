@@ -34,7 +34,7 @@ use terraops_shared::{
 use uuid::Uuid;
 
 use crate::{
-    auth::extractors::{require_permission, AuthUser},
+    auth::extractors::{require_any_permission, require_permission, AuthUser},
     errors::AppResult,
     state::AppState,
     talent::{
@@ -85,7 +85,10 @@ async fn list_candidates(
     state: web::Data<AppState>,
     q: web::Query<crate::talent::search::CandidateQuery>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
 
     let query = q.into_inner();
     let (page, page_size) = query.resolved_page();
@@ -137,7 +140,10 @@ async fn get_candidate(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let row = candidates::get_by_id(&state.pool, path.into_inner()).await?;
     Ok(HttpResponse::Ok()
         .json(terraops_shared::dto::talent::CandidateDetail::from(row)))
@@ -164,7 +170,10 @@ async fn list_roles(
     state: web::Data<AppState>,
     q: web::Query<RoleListQuery>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let q = q.into_inner();
     let r = PageQuery {
         page: q.page,
@@ -233,7 +242,10 @@ async fn get_recommendations(
     state: web::Data<AppState>,
     q: web::Query<RecoQuery>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
 
     let role_id = q.into_inner().role_id;
     let role = roles_open::get_by_id(&state.pool, role_id).await?;
@@ -321,7 +333,10 @@ async fn get_weights(
     user: AuthUser,
     state: web::Data<AppState>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let w = weights::get(&state.pool, user.0.user_id).await?;
     Ok(HttpResponse::Ok().json(w))
 }
@@ -333,7 +348,10 @@ async fn put_weights(
     state: web::Data<AppState>,
     body: web::Json<UpdateWeightsRequest>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let w = weights::upsert(&state.pool, user.0.user_id, &body.into_inner()).await?;
     Ok(HttpResponse::Ok().json(w))
 }
@@ -356,7 +374,10 @@ async fn list_watchlists(
     user: AuthUser,
     state: web::Data<AppState>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let items = watchlists::list(&state.pool, user.0.user_id).await?;
     Ok(HttpResponse::Ok().json(items))
 }
@@ -368,7 +389,10 @@ async fn create_watchlist(
     state: web::Data<AppState>,
     body: web::Json<CreateWatchlistRequest>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let item = watchlists::create(&state.pool, user.0.user_id, &body.into_inner().name).await?;
     Ok(HttpResponse::Created().json(item))
 }
@@ -380,7 +404,10 @@ async fn list_watchlist_items(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let watchlist_id = path.into_inner();
     watchlists::assert_owner(&state.pool, watchlist_id, user.0.user_id).await?;
     let entries = watchlists::list_items(&state.pool, watchlist_id).await?;
@@ -395,7 +422,10 @@ async fn add_watchlist_item(
     path: web::Path<Uuid>,
     body: web::Json<AddWatchlistItemRequest>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let watchlist_id = path.into_inner();
     watchlists::assert_owner(&state.pool, watchlist_id, user.0.user_id).await?;
     watchlists::add_item(&state.pool, watchlist_id, body.into_inner().candidate_id).await?;
@@ -409,7 +439,10 @@ async fn remove_watchlist_item(
     state: web::Data<AppState>,
     path: web::Path<(Uuid, Uuid)>,
 ) -> AppResult<impl Responder> {
-    require_permission(&user.0, "talent.read")?;
+    // Audit #8 Issue #1: `talent.manage` is a strict superset of
+    // `talent.read` — Administrators hold manage but not read in the RBAC
+    // seed, so accept either code here.
+    require_any_permission(&user.0, &["talent.read", "talent.manage"])?;
     let (watchlist_id, candidate_id) = path.into_inner();
     watchlists::assert_owner(&state.pool, watchlist_id, user.0.user_id).await?;
     watchlists::remove_item(&state.pool, watchlist_id, candidate_id).await?;
