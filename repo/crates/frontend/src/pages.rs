@@ -3302,8 +3302,8 @@ pub mod analyst {
         u8a.copy_from(bytes);
         let parts = Array::new();
         parts.push(&u8a.buffer());
-        let mut bag = BlobPropertyBag::new();
-        bag.type_("application/octet-stream");
+        let bag = BlobPropertyBag::new();
+        bag.set_type("application/octet-stream");
         let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &bag)
             .map_err(|_| "blob construction failed".to_string())?;
         let url = Url::create_object_url_with_blob(&blob)

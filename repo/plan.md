@@ -610,3 +610,78 @@ docker compose run --rm tests bash -c "cd /workspace && cargo check -p terraops-
 ```
 
 All three issues closed end-to-end. The final broad-gate rerun (`./run_tests.sh`) is intentionally deferred per the "do not rerun broad contract yet" directive; the additive DTO + migration pattern preserves the existing 114/114 endpoint parity and Gate 1 coverage floor.
+
+## Audit #2 Remediation (develop-1 lane)
+
+Closes the three-issue audit #2 bundle end-to-end. Execution shape per directive: **(A)** shared frontend contract fix first, **(B)** missing UI flow families, **(C)** keep `README.md` + `plan.md` aligned.
+
+### Issue 1 (Blocker) — Frontend API decoder drift
+
+Fixed statically against real backend handler response contracts. No papering over with `.unwrap_or_default()` or `serde(default)` hacks.
+
+- [x] `crates/frontend/src/api.rs`: split ~13 paginated endpoints into `_page() -> Page<T>` (decodes `items/page/page_size/total`) + convenience `-> Vec<T>` (maps `p.items`). Affected domains: products, imports, candidates, roles, observations, alert rules, alert events, KPI (cycle_time/funnel/anomalies/efficiency/drill), report jobs, watchlists.
+- [x] `create_product` return type corrected to `Result<Uuid, ApiError>` — handler returns `{ "id": <uuid> }`, not a `ProductDetail`. Pages.rs call site rewritten to consume the new id.
+- [x] `update_product` + `set_product_status` return `Result<(), ApiError>` via `mutate_no_body` — handlers return HTTP 204.
+- [x] `validate_import` / `commit_import` / `cancel_import` return the correct mini-envelopes (`ImportValidateResult { id, error_count, status }`, `ImportCommitResult { id, inserted, status }`, `ImportCancelResult { id, status }`) rather than `ImportBatchSummary`.
+- [x] `crates/shared/src/dto/import.rs`: three new DTOs added (`ImportValidateResult`, `ImportCommitResult`, `ImportCancelResult`) with exact field shape + types matching backend `HttpResponse::json(serde_json::json!{...})` literals. `inserted: i32` matches backend `let mut inserted = 0i32`.
+- [x] Query-string variants: `list_products_page_query`, `list_candidates_query`, `list_observations_page` accept raw URL-encoded querystrings so UI filter forms can drive real backend filtering.
+- [x] `download_report_artifact(id) -> Result<Vec<u8>, ApiError>`: raw binary fetch with JWT Bearer auth; decodes `ErrorEnvelope` on non-2xx. Enables real artifact download without losing auth context.
+
+### Issue 2 (Blocker) — Nonexistent frontend permission codes
+
+Replaced fabricated perm strings with the canonical vocabulary seeded by `migrations/0002_rbac.sql` and checked by `require_permission()`.
+
+- [x] Mapping applied across `crates/frontend/src/pages.rs` and `crates/frontend/src/components.rs`:
+  - `product.manage` → `product.write`
+  - `env.read` → `metric.read`
+  - `env.manage` → `metric.configure`
+  - `alert.read` → `alert.ack` (feed view) / `alert.manage` (rules admin)
+  - `report.manage` → `report.schedule` (schedule form) / `report.run` (one-shot run)
+- [x] Nav gating in `components.rs` rewritten against canonical codes; `gate2_tests.rs` `data_steward_nav_permissions_shape` + `analyst_nav_permissions_shape` updated accordingly.
+- [x] All 10 `<PermGate permission="...">` call sites in `pages.rs` now use codes that exist in the seeded `permissions` table.
+
+### Issue 3 (High) — Missing UI flow families
+
+Real UI flows, not placeholder cards.
+
+- [x] **Lineage "why this value" UX** — new route `/metrics/computations/:id/lineage` + `pages::analyst::ComputationLineagePage` renders formula, params, alignment/confidence, input observations table, window bounds. `SeriesPoint` DTO extended with `computation_id: Option<Uuid>` (skip-serializing-if-None) so each series point deep-links. Backend `metrics_env/definitions.rs::latest_series` now SELECTs `id` and emits `computation_id: Some(p.id)`. Live-path `SeriesPoint` constructors in `metrics_env/handlers.rs` pass `None` for the unpersisted scalar-formula case. `DefinitionSeriesBody` renders a **"Why this value?"** link per series point.
+- [x] **KPI drill/filter UX** — `pages::analyst::KpiBody` rewritten with `from` / `to` `<input type="date">` filter form; calls the new `kpi_*_page(query)` endpoints and renders cycle-time / funnel / anomalies / efficiency / drill tables against actual DTO fields (`day/site_id/department_id/avg_hours/count/index/metric_kind/label`).
+- [x] **Recruiter search/filter UX** — `pages::recruiter::CandidatesBody` rewritten with a proper filter form (q, location, skills, min-seniority, major, availability, min-education) wired through `list_candidates_query()` with URL-encoded querystring construction.
+- [x] **Product governance UX** — `pages::data_steward::ProductDetailBody` now renders three real governance surfaces: tax-rate add/delete form, product-image thumbnails with delete, and a full change-history panel via `LoadState<Vec<ProductHistoryEntry>>`.
+- [x] **Report scheduling + export download UX** — `pages::analyst::ReportsBody` renders a schedule form (kind × format × cron) and per-artifact **Download** button. Download path: `download_report_artifact()` → `trigger_blob_download(bytes, filename)` helper using `js_sys::Uint8Array` + `web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url}` — works around browser inability to attach Authorization headers to anchor navigations.
+- [x] `crates/frontend/Cargo.toml`: web-sys features extended with `HtmlAnchorElement`, `MouseEvent`, `Blob`, `BlobPropertyBag`, `Url`.
+- [x] `crates/frontend/src/router.rs`: `Route::MetricComputationLineage { id: Uuid }` added + switch arm.
+
+### Audit #2 — file change list
+
+```
+crates/shared/src/dto/import.rs         (+ ImportValidateResult/CommitResult/CancelResult)
+crates/shared/src/dto/metric.rs         (SeriesPoint.computation_id + 2 tests)
+crates/backend/src/metrics_env/definitions.rs   (latest_series emits computation_id)
+crates/backend/src/metrics_env/handlers.rs      (live SeriesPoint constructors pass None)
+crates/frontend/Cargo.toml              (web-sys Blob/Url/MouseEvent/HtmlAnchorElement)
+crates/frontend/src/api.rs              (Page<T> split, create/update return types, download_report_artifact)
+crates/frontend/src/components.rs       (nav perm-code corrections)
+crates/frontend/src/pages.rs            (10 perm-code corrections + 5 UI flow family rewrites)
+crates/frontend/src/router.rs           (/metrics/computations/:id/lineage)
+crates/frontend/src/gate2_tests.rs      (canonical perm-code expectations)
+```
+
+### Audit #2 — verification
+
+```
+docker run --rm -v "$PWD":/work -w /work rust:1.88-bookworm bash -c \
+  "rustup target add wasm32-unknown-unknown && \
+   cargo check -p terraops-frontend --target wasm32-unknown-unknown"
+→ Finished `dev` profile ... 0 errors (6 warnings: all pre-existing dead-code warnings in state.rs)
+```
+
+Broad-gate `./run_tests.sh` rerun intentionally deferred per the standing "do not rerun broad contract yet" directive. The changes are DTO-additive on the backend (no endpoint signature churn, no response-shape change — only the already-present `id` is now projected for `computation_id`), so the 114/114 endpoint-parity audit remains intact.
+
+### Audit #2 — issue → fix mapping
+
+| Issue | Severity | Root cause | Fix | Evidence |
+| --- | --- | --- | --- | --- |
+| 1 Decoder drift | Blocker | Frontend decoded `Vec<T>` where backend returned `Page<T>`; `create_product` decoded `ProductDetail` where backend returned `{id}`; import mutations decoded `ImportBatchSummary` where backend returned mini-envelopes | Split into `_page` + `Vec<T>` variants; re-typed mutation returns; added 3 new DTOs matching handler JSON shape | `cargo check -p terraops-frontend` clean |
+| 2 Fake perm codes | Blocker | UI referenced permission strings not seeded by `migrations/0002_rbac.sql`; `require_permission()` would always deny | Mapped every UI perm string to canonical vocabulary (`product.write`, `metric.read/configure`, `alert.ack/manage`, `report.schedule/run`) | 10 `PermGate` sites + nav conditions + gate2 tests aligned |
+| 3 Missing UI flows | High | Lineage, KPI drill, recruiter search, product governance, report schedule/download surfaces were either absent or placeholder | Built real components backed by real endpoints; added `/metrics/computations/:id/lineage` route; added binary-auth download helper | 5 new flow families live; all compile clean on wasm target |
