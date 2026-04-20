@@ -553,16 +553,20 @@ async fn deep_security_mtls_patch_toggles_and_status_reflects_certs() {
     .await;
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
 
-    // Toggle on
+    // Toggle on — Audit #12 changed the PATCH response from 204 No Content
+    // to 200 OK with a restart-contract body (enforced / active_enforced /
+    // pending_restart / note). Assert the new 200 contract.
     let req = test::TestRequest::patch()
         .uri("/api/v1/security/mtls")
         .insert_header(("Authorization", bearer(&tok)))
         .set_json(json!({"enforced": true}))
         .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::NO_CONTENT
-    );
+    let patch_resp = test::call_service(&app, req).await;
+    assert_eq!(patch_resp.status(), StatusCode::OK);
+    let patch_body: Value = test::read_body_json(patch_resp).await;
+    assert_eq!(patch_body["enforced"], true, "enforced should be persisted");
+    assert!(patch_body.get("active_enforced").is_some(), "active_enforced present");
+    assert!(patch_body.get("pending_restart").is_some(), "pending_restart present");
     // Confirm via GET.
     let req = test::TestRequest::get()
         .uri("/api/v1/security/mtls")
@@ -598,7 +602,7 @@ async fn deep_security_mtls_patch_toggles_and_status_reflects_certs() {
     assert_eq!(body["revoked_certs"], 1);
     assert_eq!(body["enforced"], true);
 
-    // Toggle back off so we don't leave global state surprises for siblings.
+    // Toggle back off — also returns 200 per Audit #12 contract.
     let req = test::TestRequest::patch()
         .uri("/api/v1/security/mtls")
         .insert_header(("Authorization", bearer(&tok)))
@@ -606,7 +610,7 @@ async fn deep_security_mtls_patch_toggles_and_status_reflects_certs() {
         .to_request();
     assert_eq!(
         test::call_service(&app, req).await.status(),
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
 }
 

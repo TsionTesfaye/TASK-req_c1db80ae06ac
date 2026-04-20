@@ -210,7 +210,7 @@ else
     # entrypoint has completed dev_bootstrap, migrations, and seed — so a
     # passing TCP probe means the service is fully initialised.
     flow_ok=1
-    if ! compose up -d --wait app; then
+    if ! compose up -d --wait --build app; then
         echo "[flow] FAILED — app service did not become healthy within its healthcheck budget." >&2
         failed=1
         flow_ok=0
