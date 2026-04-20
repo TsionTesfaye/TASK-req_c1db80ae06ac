@@ -131,16 +131,33 @@ pub async fn load_with_roles(pool: &PgPool, user_id: Uuid) -> AppResult<UserWith
     })
 }
 
+/// Lockout threshold — number of consecutive failed login attempts
+/// required before the user is locked out. Aligned with
+/// `docs/design.md` Security Decision #7 ("Lockout after 10 failures
+/// / 15-min rolling window") and `docs/api-spec.md` A1 row
+/// ("lockout after 10/15min"). Audit #13 Issue #3 closed the drift —
+/// previous code used 5, which contradicted the documented contract
+/// and the A1 login spec. Any change here must update both docs.
+pub const LOCKOUT_FAILURE_THRESHOLD: i32 = 10;
+
+/// Lockout duration applied when the threshold is reached.
+pub const LOCKOUT_DURATION_MINUTES: i32 = 15;
+
 /// Increment failed login counter. Returns new count.
+///
+/// Locks the account (`locked_until = NOW() + 15 min`) when the
+/// post-increment count reaches `LOCKOUT_FAILURE_THRESHOLD`.
 pub async fn note_failed_login(pool: &PgPool, user_id: Uuid) -> AppResult<i32> {
     let row: (i32,) = sqlx::query_as(
         "UPDATE users SET failed_login_count = failed_login_count + 1, \
-                           locked_until = CASE WHEN failed_login_count + 1 >= 5 \
-                                               THEN NOW() + INTERVAL '15 minutes' \
+                           locked_until = CASE WHEN failed_login_count + 1 >= $2 \
+                                               THEN NOW() + ($3::int || ' minutes')::interval \
                                                ELSE locked_until END \
          WHERE id = $1 RETURNING failed_login_count",
     )
     .bind(user_id)
+    .bind(LOCKOUT_FAILURE_THRESHOLD)
+    .bind(LOCKOUT_DURATION_MINUTES)
     .fetch_one(pool)
     .await?;
     Ok(row.0)

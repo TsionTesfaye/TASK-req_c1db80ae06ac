@@ -14,6 +14,10 @@ pub struct KpiSummary {
     pub funnel_conversion_pct: f64,
     pub anomaly_count: i64,
     pub efficiency_index: f64,
+    /// Audit #13 Issue #2: % of tracked SKUs observed on-shelf in the last
+    /// 24 h (averaged across all `sku_on_shelf_compliance` metric rows).
+    /// 0.0 when no such metric has produced computations yet.
+    pub sku_on_shelf_compliance_pct: f64,
     pub generated_at: DateTime<Utc>,
 }
 

@@ -686,6 +686,34 @@ Broad-gate `./run_tests.sh` rerun intentionally deferred per the standing "do no
 | 2 Fake perm codes | Blocker | UI referenced permission strings not seeded by `migrations/0002_rbac.sql`; `require_permission()` would always deny | Mapped every UI perm string to canonical vocabulary (`product.write`, `metric.read/configure`, `alert.ack/manage`, `report.schedule/run`) | 10 `PermGate` sites + nav conditions + gate2 tests aligned |
 | 3 Missing UI flows | High | Lineage, KPI drill, recruiter search, product governance, report schedule/download surfaces were either absent or placeholder | Built real components backed by real endpoints; added `/metrics/computations/:id/lineage` route; added binary-auth download helper | 5 new flow families live; all compile clean on wasm target |
 
+## Audit #13 Remediation (develop-1 lane)
+
+Four findings closed as a single coherent remediation bundle (shape A-B-C-D from the inbound directive):
+
+| # | Severity | Finding | Fix |
+| - | -------- | ------- | --- |
+| 1 | Blocker | `GET /api/v1/images/{id}` required `Authorization: Bearer`, but browsers cannot attach that header to `<img src="…">` loads — every product image in the shipped UI was statically broken. | Made the signed URL itself the capability: `?u=<uuid>&exp=<unix>&sig=<hex(HMAC-SHA256(path|u|exp))>`. `serve_image` no longer takes `AuthUser`; it calls `signed_url::parse_query` + `signed_url::verify` and returns `403 Forbidden` on tamper/expiry. Minting remains bearer-gated (only authenticated handlers can produce signed URLs), so anti-hotlink + auth-provenance properties are preserved. `docs/api-spec.md` P13 changed from `AUTH` to `SIGNED`. |
+| 2 | High    | SKU on-shelf compliance was not representable in the metric/KPI/alert model — formula_kind + metric_kind CHECKs excluded it, there was no default metric/alert seed, no summary field, no rollup mapping, no UI card. | New migration `0024_sku_on_shelf_compliance.sql` widens both CHECKs, seeds the default metric definition + alert rule idempotently. `metrics_env::formula::sku_on_shelf_compliance` implements the share-of-positive-observations formula. `get_series` handler gains a `sku_on_shelf_compliance` branch. `jobs::metric_rollup_once` maps `sku_on_shelf_compliance → sku_on_shelf_compliance`. `KpiSummary` carries `sku_on_shelf_compliance_pct`; frontend Home + KPI workspace render the new KPI card. |
+| 3 | High    | Auth lockout used 5 failures while `docs/design.md` §Security #7 and `docs/api-spec.md` A1 both documented 10 failures / 15-min rolling window. | `services::users::note_failed_login` now reads from two named constants (`LOCKOUT_FAILURE_THRESHOLD = 10`, `LOCKOUT_DURATION_MINUTES = 15`) and the doc comment on `auth/password.rs` calls out the 10/15 contract + the Audit #13 drift it closed. |
+| 4 | High    | Feedback retention used candidate-wide `MAX(created_at)` — any recent feedback anywhere touching that candidate preserved all of it — but docs said *"inactive-user feedback 24 months"*. | Both the background sweep (`jobs::retention_sweep_once`) and the manual sweep (`POST /retention/feedback/run`) now delete feedback whose `owner_id` belongs to a user with no `sessions.issued_at` inside the TTL window (or no sessions at all and a user row older than the TTL). Active owners retain their full history regardless of row age. |
+
+Files changed:
+
+- **Backend — new:** `crates/backend/migrations/0024_sku_on_shelf_compliance.sql`.
+- **Backend — edited:** `crates/backend/src/products/images.rs` (bearer-less signed-URL serve), `crates/backend/src/crypto/email.rs` *(context read only)*, `crates/backend/src/crypto/signed_url.rs` (self-authorizing `u=exp=sig=` format + `parse_query`), `crates/backend/src/metrics_env/handlers.rs` (formula_kind whitelist + series branch), `crates/backend/src/metrics_env/formula.rs` (new `sku_on_shelf_compliance` function + module doc), `crates/backend/src/kpi/repo.rs` (sku_on_shelf_compliance_pct in `summary`), `crates/backend/src/jobs/mod.rs` (rollup mapping + inactive-user feedback retention), `crates/backend/src/handlers/retention.rs` (inactive-user feedback SQL), `crates/backend/src/services/users.rs` (LOCKOUT constants + threshold 10), `crates/backend/src/auth/password.rs` (doc comment 5→10).
+- **Shared DTO:** `crates/shared/src/dto/kpi.rs` (`KpiSummary.sku_on_shelf_compliance_pct`).
+- **Frontend:** `crates/frontend/src/pages.rs` (Home KPI card + KPI workspace summary card).
+- **Tests:** `crates/backend/tests/integration_tests.rs` (P13 bearer-less + tampered-`u`; inactive-user retention; active-user preservation), `crates/backend/tests/deep_jobs_scheduler_tests.rs` (rollup enumerates `sku_on_shelf_compliance`).
+- **Docs:** `README.md` (Audit #13 Remediation section), `docs/api-spec.md` (P13 SIGNED note), `plan.md` (this section).
+
+Verification shape:
+
+- Signed URL tamper/expiry: `t_int_signed_image_url_rejects_forged_and_expired` + `t_int_signed_image_url_rejects_tampered_u` cover bearer-less contract.
+- SKU rollup: `deep_jobs_metric_rollup_maps_formula_kinds_to_metric_kinds` asserts the new `sku_on_shelf_compliance` metric_kind appears and idempotency holds at 4 distinct rows.
+- Retention: `t_int_retention_feedback_purges_expired` asserts full-history deletion for an inactive owner (all 3 rows); `t_int_retention_feedback_preserves_active_user_history` asserts full-history preservation for an active owner (0 rows deleted).
+- Lockout: constants reviewed against `docs/design.md §Security` #7 and `docs/api-spec.md` A1; no endpoint signatures changed, no parity impact.
+- Broad-gate `./run_tests.sh` rerun deferred per the standing "do not rerun broad contract yet" directive.
+
 ## Audit #12 Remediation (develop-1 lane)
 
 Four findings closed as a single coherent remediation bundle (shape A-B-C-D from the inbound directive):

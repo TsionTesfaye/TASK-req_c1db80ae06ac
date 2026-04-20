@@ -1,7 +1,9 @@
 //! Password verification + lockout + change-password flow.
 //!
 //! Login rules (design §Security):
-//!   * 5 consecutive failed attempts → 15 min lock.
+//!   * 10 consecutive failed attempts → 15 min lock (per docs/design.md
+//!     Security Decision #7 and docs/api-spec.md A1 "lockout after
+//!     10/15min"). Audit #13 Issue #3 closed the previous 5-attempt drift.
 //!   * Successful login resets the counter.
 //!   * Lockout is wall-clock (via `users.locked_until`).
 //!

@@ -593,6 +593,73 @@ findings:
   `crates/backend/src/crypto/email.rs` clarifies that the email
   hash is used for admin lookup/uniqueness, not for login.
 
+## Audit #13 Remediation — self-authorizing image URLs, SKU on-shelf compliance KPI, lockout/threshold & retention alignment
+
+The `develop-1` audit-#13 remediation bundle closes four findings:
+
+- **Browser image delivery is no longer statically broken (Blocker).**
+  `GET /api/v1/images/{id}` previously required an `Authorization: Bearer`
+  header, which browsers cannot attach to `<img src="…">` loads, so every
+  product image in the shipped UI was gated on an impossible-to-send
+  header. The endpoint now uses the signed-URL query string itself as the
+  capability: `?u=<uuid>&exp=<unix>&sig=<hex(hmac-sha256(path|u|exp))>`.
+  The HMAC binds `(path, user_id, exp)`, so tampering with `u` or `exp`
+  produces a signature mismatch (403). Mint time is still bearer-gated —
+  only authenticated handlers (e.g. `GET /products/{id}`) can produce
+  signed URLs, so the URL remains anti-hotlinkable and auth-provenanced.
+  `docs/api-spec.md` P13 row changed from `AUTH` to `SIGNED` with the
+  contract stated inline. Tests updated: `t_int_signed_image_url_*`
+  exercise the bearer-less contract including tampered-`u` rejection.
+- **SKU on-shelf compliance is first-class in the KPI + alert model
+  (High).** Migration `0024_sku_on_shelf_compliance.sql` widens the
+  `metric_definitions.formula_kind` and `kpi_rollup_daily.metric_kind`
+  CHECK constraints to include `sku_on_shelf_compliance` and
+  idempotently seeds the default metric definition
+  (`sku_on_shelf_compliance_default`, window=86400 s,
+  params={"threshold_pct":95.0}) plus its default alert rule
+  (`threshold=95.0, operator='<', severity='warning'`). The formula is
+  implemented in `metrics_env/formula::sku_on_shelf_compliance` (share
+  of positive observations across the window × 100), wired into the
+  `/metrics/definitions/{id}/series` handler, and rolled up by
+  `jobs::metric_rollup_once` with a dedicated `sku_on_shelf_compliance`
+  `metric_kind`. `KpiSummary` now carries `sku_on_shelf_compliance_pct`
+  (24 h average), surfaced in both the Home-dashboard KPI card and the
+  KPI workspace summary grid.
+- **Auth lockout threshold aligned with the docs (High).** Login now
+  locks after **10** consecutive failed attempts within a 15-minute
+  window (`LOCKOUT_FAILURE_THRESHOLD = 10` + `LOCKOUT_DURATION_MINUTES
+  = 15`), matching `docs/design.md` Security Decision #7 and the A1
+  row of `docs/api-spec.md`. The previous 5-attempt constant in
+  `services/users.rs::note_failed_login` contradicted both documents.
+- **Feedback retention uses documented inactive-user semantics
+  (High).** Design Decision #14 specifies *"inactive-user feedback 24
+  months"*. Both the background sweep (`jobs::retention_sweep_once`)
+  and the manual sweep (`POST /retention/feedback/run`) now delete
+  feedback rows whose `owner_id` belongs to a user with no session
+  `issued_at` inside the TTL window (or no sessions at all and a user
+  row older than the TTL). Any session issued inside the window
+  preserves the entire feedback history that user authored. This
+  supersedes the previous candidate-wide `MAX(created_at)` proxy from
+  Audit #7. Two tests exercise both sides: an inactive owner has all
+  feedback purged; an active owner retains even ancient feedback.
+
+Verification (code-level; broad `./run_tests.sh` rerun deferred per the
+standing "do not rerun broad contract yet" directive):
+
+- Signed-URL tampering + expiry rejection covered by
+  `t_int_signed_image_url_rejects_forged_and_expired` and
+  `t_int_signed_image_url_rejects_tampered_u`.
+- `deep_jobs_metric_rollup_maps_formula_kinds_to_metric_kinds` extended
+  to assert the `sku_on_shelf_compliance` row now appears in
+  `kpi_rollup_daily` and idempotency stays intact (4 distinct kinds).
+- Retention: `t_int_retention_feedback_purges_expired` now asserts
+  full-history deletion for an inactive owner, and the new
+  `t_int_retention_feedback_preserves_active_user_history` proves an
+  active owner retains all feedback.
+- Lockout: `services::users::LOCKOUT_FAILURE_THRESHOLD` reviewed
+  against `docs/design.md §Security` and `docs/api-spec.md` A1; no
+  endpoint signatures changed.
+
 ## Audit #12 Remediation — real cron scheduling, honest report failures, restart-gated mTLS contract, parity docs
 
 The `develop-1` audit-#12 remediation bundle closes four findings:

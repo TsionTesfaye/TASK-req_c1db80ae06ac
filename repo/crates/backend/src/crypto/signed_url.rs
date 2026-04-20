@@ -1,20 +1,26 @@
-//! HMAC-signed image URLs.
+//! HMAC-signed image URLs — self-authorizing so plain `<img src="…">`
+//! browser requests work without an `Authorization: Bearer` header.
+//!
+//! Audit #13 Issue #1: the previous contract required both the signed
+//! URL *and* a bearer session on the image fetch. That is
+//! incompatible with how browsers load images from `<img src=…>` (they
+//! cannot attach a `Authorization` header), so the shipped UI was
+//! statically broken. The contract is now: the signed URL alone is the
+//! capability, and it is minted only by authenticated handlers.
 //!
 //! Design §Images: every protected image read goes through a signed URL
 //! with `exp` ≤ 600s from issuance. The signature covers
 //! `path | user_id | exp`, so:
 //!
 //!   * a leaked URL only grants access to the one path it was signed for,
-//!   * the same URL cannot be replayed past its `exp`, and
-//!   * the same URL cannot be reused by a *different* authenticated user
-//!     — audit #11 issue #1. The verifier recomputes the HMAC using the
-//!     authenticated caller's user id; a different caller yields a
-//!     different HMAC and is rejected with `403`.
+//!   * the same URL cannot be replayed past its `exp`,
+//!   * the `u=<uuid>` parameter is in the URL but is bound by the HMAC
+//!     — tampering with it produces a signature mismatch (403),
+//!   * only handlers that already enforce bearer auth mint signed URLs,
+//!     so the only way to obtain a valid URL is to have been
+//!     authenticated at mint time (anti-hotlink + auth-gated provenance).
 //!
-//! Query shape remains `?exp=<unix_seconds>&sig=<hex(hmac-sha256)>`; the
-//! user id is never placed in the URL (the authenticated session already
-//! identifies the caller server-side), so nothing about the user is
-//! leaked in logs or referers.
+//! Query shape is `?u=<uuid>&exp=<unix_seconds>&sig=<hex(hmac-sha256)>`.
 
 use chrono::Utc;
 use hmac::{Hmac, Mac};
@@ -40,17 +46,48 @@ fn compute(path: &str, user_id: Uuid, exp: i64, key: &[u8; 32]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Produce `?exp=...&sig=...` for the given path + user. Clamped to 600s.
+/// Produce `?u=<uuid>&exp=<unix>&sig=<hex>` for the given path + user.
+/// TTL is clamped to `MAX_TTL_SECONDS` (600). The `u=` parameter is
+/// part of the URL because browsers cannot attach a bearer header for
+/// `<img src=…>` loads; the HMAC over `path|user_id|exp` prevents any
+/// tampering with `u` (Audit #13 Issue #1).
 pub fn sign(path: &str, user_id: Uuid, ttl_seconds: i64, key: &[u8; 32]) -> String {
     let ttl = ttl_seconds.clamp(1, MAX_TTL_SECONDS);
     let exp = Utc::now().timestamp() + ttl;
     let sig = compute(path, user_id, exp, key);
-    format!("exp={exp}&sig={}", hex::encode(sig))
+    format!(
+        "u={}&exp={exp}&sig={}",
+        user_id.hyphenated(),
+        hex::encode(sig)
+    )
 }
 
-/// Verify a query string for `path` against the authenticated caller's
-/// user id. Returns `Ok(())` on success; the HMAC mismatches if any of
-/// `path`, `user_id`, or `exp` differ from what was signed.
+/// Parse the three query-string parameters (`u`, `exp`, `sig`) out of
+/// the provided raw query. Returns `None` if any are missing or
+/// malformed. Accepts params in any order.
+pub fn parse_query(qs: &str) -> Option<(Uuid, i64, String)> {
+    let mut u_val: Option<Uuid> = None;
+    let mut exp_val: Option<i64> = None;
+    let mut sig_val: Option<String> = None;
+    for kv in qs.split('&') {
+        if let Some(v) = kv.strip_prefix("u=") {
+            u_val = Uuid::parse_str(v).ok();
+        } else if let Some(v) = kv.strip_prefix("exp=") {
+            exp_val = v.parse::<i64>().ok();
+        } else if let Some(v) = kv.strip_prefix("sig=") {
+            sig_val = Some(v.to_string());
+        }
+    }
+    match (u_val, exp_val, sig_val) {
+        (Some(u), Some(e), Some(s)) => Some((u, e, s)),
+        _ => None,
+    }
+}
+
+/// Verify the tuple `(path, user_id, exp, sig_hex)` against the
+/// provided HMAC key. `user_id` comes straight from the URL's `u=`
+/// parameter; any tampering yields a signature mismatch. Returns
+/// `Ok(())` on success.
 pub fn verify(
     path: &str,
     user_id: Uuid,
@@ -78,26 +115,24 @@ pub fn verify(
 mod tests {
     use super::*;
 
-    fn parse_qs(qs: &str) -> (i64, String) {
-        let mut exp = 0i64;
-        let mut sig = String::new();
-        for kv in qs.split('&') {
-            if let Some(v) = kv.strip_prefix("exp=") {
-                exp = v.parse().unwrap();
-            } else if let Some(v) = kv.strip_prefix("sig=") {
-                sig = v.to_string();
-            }
-        }
-        (exp, sig)
-    }
-
     #[test]
     fn sign_verify_roundtrip() {
         let k = [11u8; 32];
         let uid = Uuid::new_v4();
         let qs = sign("/images/products/abc.png", uid, 300, &k);
-        let (exp, sig) = parse_qs(&qs);
-        verify("/images/products/abc.png", uid, exp, &sig, &k).unwrap();
+        let (u, exp, sig) = parse_query(&qs).unwrap();
+        assert_eq!(u, uid);
+        verify("/images/products/abc.png", u, exp, &sig, &k).unwrap();
+    }
+
+    #[test]
+    fn query_contains_u_exp_sig() {
+        let k = [11u8; 32];
+        let uid = Uuid::new_v4();
+        let qs = sign("/p", uid, 60, &k);
+        assert!(qs.contains(&format!("u={}", uid.hyphenated())));
+        assert!(qs.contains("exp="));
+        assert!(qs.contains("sig="));
     }
 
     #[test]
@@ -105,8 +140,8 @@ mod tests {
         let k = [12u8; 32];
         let uid = Uuid::new_v4();
         let qs = sign("/images/a.png", uid, 300, &k);
-        let (exp, sig) = parse_qs(&qs);
-        assert!(verify("/images/b.png", uid, exp, &sig, &k).is_err());
+        let (u, exp, sig) = parse_query(&qs).unwrap();
+        assert!(verify("/images/b.png", u, exp, &sig, &k).is_err());
     }
 
     #[test]
@@ -115,19 +150,20 @@ mod tests {
         let k2 = [2u8; 32];
         let uid = Uuid::new_v4();
         let qs = sign("/images/a.png", uid, 300, &k1);
-        let (exp, sig) = parse_qs(&qs);
-        assert!(verify("/images/a.png", uid, exp, &sig, &k2).is_err());
+        let (u, exp, sig) = parse_query(&qs).unwrap();
+        assert!(verify("/images/a.png", u, exp, &sig, &k2).is_err());
     }
 
-    // Audit #11 issue #1: verifying a URL signed for user A under user
-    // B's identity must fail, even with identical path + exp + key.
+    // Audit #13 Issue #1: tampering with the `u=` parameter to swap in
+    // another user's id must fail — the HMAC binds path|user_id|exp so
+    // swapping the URL's user id yields a signature mismatch.
     #[test]
-    fn wrong_user_rejected() {
+    fn tampered_u_rejected() {
         let k = [7u8; 32];
         let alice = Uuid::new_v4();
         let bob = Uuid::new_v4();
         let qs = sign("/images/a.png", alice, 300, &k);
-        let (exp, sig) = parse_qs(&qs);
+        let (_u, exp, sig) = parse_query(&qs).unwrap();
         assert!(verify("/images/a.png", alice, exp, &sig, &k).is_ok());
         assert!(verify("/images/a.png", bob, exp, &sig, &k).is_err());
     }
@@ -154,7 +190,7 @@ mod tests {
         let k = [4u8; 32];
         let uid = Uuid::new_v4();
         let qs = sign("/x", uid, 99_999, &k);
-        let (exp, _) = parse_qs(&qs);
+        let (_u, exp, _sig) = parse_query(&qs).unwrap();
         let delta = exp - Utc::now().timestamp();
         assert!(delta <= MAX_TTL_SECONDS + 2);
     }

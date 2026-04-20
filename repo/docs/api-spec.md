@@ -117,7 +117,7 @@ Every row below corresponds to an actual `.route(...)` entry mounted by `handler
 | P10 | DELETE | `/api/v1/products/{id}/tax-rates/{rid}` | PERM(product.write) | remove |
 | P11 | POST | `/api/v1/products/{id}/images` | PERM(product.write) | multipart upload |
 | P12 | DELETE | `/api/v1/products/{id}/images/{imgid}` | PERM(product.write) | |
-| P13 | GET | `/api/v1/images/{imgid}` | AUTH | signed-URL retrieval; requires valid `sig` + `exp` query params (see Contract Rules) |
+| P13 | GET | `/api/v1/images/{imgid}` | SIGNED | signed-URL retrieval; the HMAC-bound `?u=<uuid>&exp=<unix>&sig=<hex>` query string itself is the capability (no bearer header — Audit #13 Issue #1). Tampering with `u` or `exp` fails the HMAC → 403. Mint time (product detail etc.) is bearer-gated. |
 | P14 | POST | `/api/v1/products/export` | PERM(product.read) | kind=csv\|xlsx, streams |
 
 ### Product Imports

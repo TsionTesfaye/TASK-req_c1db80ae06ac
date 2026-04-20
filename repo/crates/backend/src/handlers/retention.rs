@@ -145,17 +145,32 @@ async fn run_retention(
             res.rows_affected() as i64
         }
         "feedback" => {
-            // Audit #7 Issue #1: feedback retention is driven by inactivity,
-            // not by the age of each individual row. Delete all feedback
-            // rows belonging to candidates whose most recent feedback is
-            // older than the TTL window ("24 months of inactivity" when
-            // ttl_days = 730).
+            // Audit #13 Issue #4: feedback retention follows the documented
+            // inactive-*user* contract in docs/design.md Design Decision
+            // #14 ("inactive-user feedback 24 months"). A feedback row is
+            // eligible for deletion when its owning user has been inactive
+            // for the TTL window — i.e. no session issued inside the
+            // window, or (no sessions at all AND the user record itself
+            // is older than the TTL window). Any session issued inside
+            // the window preserves the entire feedback history that
+            // user authored. This supersedes the earlier candidate-wide
+            // recent-activity proxy which disagreed with the documented
+            // contract.
             let res = sqlx::query(
                 "DELETE FROM talent_feedback \
-                 WHERE candidate_id IN ( \
-                     SELECT candidate_id FROM talent_feedback \
-                     GROUP BY candidate_id \
-                     HAVING MAX(created_at) < NOW() - ($1::int || ' days')::interval \
+                 WHERE owner_id IN ( \
+                     SELECT u.id FROM users u \
+                     LEFT JOIN ( \
+                         SELECT user_id, MAX(issued_at) AS last_issued \
+                         FROM sessions GROUP BY user_id \
+                     ) s ON s.user_id = u.id \
+                     WHERE ( \
+                         s.last_issued IS NOT NULL \
+                         AND s.last_issued < NOW() - ($1::int || ' days')::interval \
+                     ) OR ( \
+                         s.last_issued IS NULL \
+                         AND u.created_at < NOW() - ($1::int || ' days')::interval \
+                     ) \
                  )",
             )
             .bind(ttl)

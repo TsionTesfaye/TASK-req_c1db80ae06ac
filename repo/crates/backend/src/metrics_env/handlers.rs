@@ -224,10 +224,16 @@ async fn create_definition(
     require_permission(&user.0, "metric.configure")?;
     let b = body.into_inner();
     // Validate formula_kind
-    if !["moving_average", "rate_of_change", "comfort_index"].contains(&b.formula_kind.as_str()) {
-        return Err(AppError::Validation(format!(
-            "formula_kind must be one of: moving_average, rate_of_change, comfort_index"
-        )));
+    // Audit #13 Issue #2: `sku_on_shelf_compliance` is a prompt-required
+    // KPI formula kind (new). It joins the existing three kinds as a
+    // first-class citizen of the metrics/KPI/alert pipeline.
+    if !["moving_average", "rate_of_change", "comfort_index", "sku_on_shelf_compliance"]
+        .contains(&b.formula_kind.as_str())
+    {
+        return Err(AppError::Validation(
+            "formula_kind must be one of: moving_average, rate_of_change, comfort_index, sku_on_shelf_compliance"
+                .into(),
+        ));
     }
     // Audit #4 Issue #3: validate analyst-configurable alignment rules
     // + confidence labels embedded in `params`. Missing block defaults
@@ -274,9 +280,11 @@ async fn update_definition(
     require_permission(&user.0, "metric.configure")?;
     let b = body.into_inner();
     if let Some(ref fk) = b.formula_kind {
-        if !["moving_average", "rate_of_change", "comfort_index"].contains(&fk.as_str()) {
+        if !["moving_average", "rate_of_change", "comfort_index", "sku_on_shelf_compliance"]
+            .contains(&fk.as_str())
+        {
             return Err(AppError::Validation(
-                "formula_kind must be one of: moving_average, rate_of_change, comfort_index"
+                "formula_kind must be one of: moving_average, rate_of_change, comfort_index, sku_on_shelf_compliance"
                     .into(),
             ));
         }
@@ -474,6 +482,42 @@ async fn get_series(
                     } else {
                         None
                     }
+                }
+                "sku_on_shelf_compliance" => {
+                    // Audit #13 Issue #2: aggregate observations across every
+                    // attached source — each source represents one tracked
+                    // SKU feed; value > 0 counts as on-shelf. Compliance % is
+                    // the share of non-zero observations across the window.
+                    let mut all_samples: Vec<crate::metrics_env::sources::WindowSample> =
+                        Vec::new();
+                    for sid in &def.source_ids {
+                        let s =
+                            sources::fetch_window(&state.pool, *sid, window_start, now).await?;
+                        all_samples.extend(s);
+                    }
+                    let pts = sources::formula_points(&all_samples);
+                    super::formula::sku_on_shelf_compliance(
+                        &pts,
+                        def.window_seconds as i64,
+                        now,
+                    )
+                    .map(|v| {
+                        let cid = persist_computation_bg(
+                            state.pool.clone(),
+                            def_id,
+                            v,
+                            &all_samples,
+                            window_start,
+                            now,
+                            None,
+                            None,
+                        );
+                        terraops_shared::dto::metric::SeriesPoint {
+                            at: now,
+                            value: v,
+                            computation_id: Some(cid),
+                        }
+                    })
                 }
                 _ => None,
             }

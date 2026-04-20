@@ -15,6 +15,16 @@
 //! fewer than two distinct timestamps in the window, or when the time span is
 //! zero.
 //!
+//! ## sku_on_shelf_compliance
+//! Retail shelf-compliance percentage: the share of observations within the
+//! window whose value is non-zero (i.e. the SKU was observed on-shelf).
+//! Each contributing source represents one tracked SKU feed; the value of
+//! each observation is typically 1.0 (on-shelf) or 0.0 (missing), so the
+//! mean × 100 is the compliance %. Non-boolean inputs are tolerated: any
+//! strictly-positive value counts as on-shelf. Returns `None` when the
+//! window has no observations at all — the KPI reads as "no signal yet"
+//! rather than 0 %.
+//!
 //! ## comfort_index
 //! Occupant comfort index (extended Missenard with air-speed cooling):
 //!
@@ -104,6 +114,29 @@ pub fn rate_of_change(
         return None;
     }
     Some((v_last - v_first) / dt_seconds)
+}
+
+/// Audit #13 Issue #2 — SKU on-shelf compliance percentage.
+///
+/// Returns `Some(pct)` where `pct ∈ [0.0, 100.0]` is the share of window
+/// observations whose value is strictly greater than zero (on-shelf).
+/// Returns `None` when the window contains no observations.
+pub fn sku_on_shelf_compliance(
+    window: &[WindowPoint],
+    window_seconds: i64,
+    at: DateTime<Utc>,
+) -> Option<f64> {
+    let cutoff = at - chrono::Duration::seconds(window_seconds);
+    let in_window: Vec<f64> = window
+        .iter()
+        .filter(|(ts, _)| *ts >= cutoff && *ts <= at)
+        .map(|(_, v)| *v)
+        .collect();
+    if in_window.is_empty() {
+        return None;
+    }
+    let on_shelf = in_window.iter().filter(|v| **v > 0.0).count() as f64;
+    Some((on_shelf / in_window.len() as f64) * 100.0)
 }
 
 /// Full output of the comfort-index computation, including the alignment

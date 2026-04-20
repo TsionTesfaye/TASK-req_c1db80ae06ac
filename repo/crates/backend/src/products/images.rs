@@ -138,36 +138,32 @@ pub async fn delete_image(
 }
 
 // ---------------------------------------------------------------------------
-// P13 GET /images/{imgid} — signed URL serve
+// P13 GET /images/{imgid} — signed URL serve (PUBLIC, HMAC-gated)
 // ---------------------------------------------------------------------------
+//
+// Audit #13 Issue #1: this endpoint is deliberately *not* gated on the
+// `AuthUser` extractor. Browsers cannot attach `Authorization: Bearer
+// …` to `<img src="…">` loads, so a handler that required a bearer
+// made the shipped UI statically broken. The URL itself is the
+// capability: `?u=<uuid>&exp=<unix>&sig=<hex(hmac-sha256(path|u|exp))>`.
+// The HMAC binds all three parameters, so tampering with `u` or `exp`
+// produces a signature mismatch (403). Mint time is still
+// bearer-gated (only authenticated handlers such as
+// `GET /products/{id}` produce signed URLs), so the image remains
+// anti-hotlinkable and auth-provenanced.
 
 pub async fn serve_image(
     req: HttpRequest,
-    user: AuthUser,
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
     let img_id = path.into_inner();
     let api_path = format!("/api/v1/images/{img_id}");
 
-    // Extract sig + exp from query
-    let qs = req.query_string();
-    let mut exp_val: Option<i64> = None;
-    let mut sig_val: Option<String> = None;
-    for kv in qs.split('&') {
-        if let Some(v) = kv.strip_prefix("exp=") {
-            exp_val = v.parse::<i64>().ok();
-        } else if let Some(v) = kv.strip_prefix("sig=") {
-            sig_val = Some(v.to_string());
-        }
-    }
+    let (u, exp, sig) = signed_url::parse_query(req.query_string())
+        .ok_or(AppError::Forbidden("missing signed URL parameters"))?;
 
-    let (exp, sig) = match (exp_val, sig_val) {
-        (Some(e), Some(s)) => (e, s),
-        _ => return Err(AppError::Forbidden("missing signed URL parameters")),
-    };
-
-    signed_url::verify(&api_path, user.0.user_id, exp, &sig, &state.keys.image_hmac)
+    signed_url::verify(&api_path, u, exp, &sig, &state.keys.image_hmac)
         .map_err(|_| AppError::Forbidden("invalid or expired signed URL"))?;
 
     // Look up the image row

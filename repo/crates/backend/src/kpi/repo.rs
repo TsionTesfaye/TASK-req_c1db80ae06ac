@@ -83,11 +83,24 @@ pub async fn summary(pool: &PgPool) -> AppResult<KpiSummary> {
     .fetch_one(pool)
     .await?;
 
+    // Audit #13 Issue #2: sku_on_shelf_compliance_pct — average of
+    // metric_computations.result for metric definitions whose formula_kind
+    // is 'sku_on_shelf_compliance', over the past 24 h. Falls back to 0.
+    let sku_compliance: (Option<f64>,) = sqlx::query_as(
+        "SELECT AVG(mc.result) FROM metric_computations mc \
+         JOIN metric_definitions md ON md.id = mc.definition_id \
+         WHERE md.formula_kind = 'sku_on_shelf_compliance' \
+           AND mc.computed_at >= NOW() - INTERVAL '24 hours'",
+    )
+    .fetch_one(pool)
+    .await?;
+
     Ok(KpiSummary {
         cycle_time_avg_hours: cycle_hours.0.unwrap_or(0.0),
         funnel_conversion_pct: funnel_pct,
         anomaly_count,
         efficiency_index: efficiency.0.unwrap_or(0.0),
+        sku_on_shelf_compliance_pct: sku_compliance.0.unwrap_or(0.0),
         generated_at: Utc::now(),
     })
 }

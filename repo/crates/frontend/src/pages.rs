@@ -382,6 +382,10 @@ pub mod dashboard {
                             <div class="tx-kpi__label">{ "Efficiency index" }</div>
                             <div class="tx-kpi__value">{ format!("{:.2}", s.efficiency_index) }</div>
                         </div>
+                        <div class="tx-kpi">
+                            <div class="tx-kpi__label">{ "SKU on-shelf compliance" }</div>
+                            <div class="tx-kpi__value">{ format!("{:.1}%", s.sku_on_shelf_compliance_pct) }</div>
+                        </div>
                     </div>
                     <p class="tx-subtle tx-hint">
                         { format!("As of {}", format_ts(s.generated_at)) }
@@ -3458,6 +3462,10 @@ pub mod analyst {
                     <article class="tx-card">
                         <h2 class="tx-title tx-title--sm">{ "Efficiency index" }</h2>
                         <div class="tx-kpi">{ format!("{:.2}", s.efficiency_index) }</div>
+                    </article>
+                    <article class="tx-card">
+                        <h2 class="tx-title tx-title--sm">{ "SKU on-shelf compliance" }</h2>
+                        <div class="tx-kpi">{ format!("{:.1}%", s.sku_on_shelf_compliance_pct) }</div>
                     </article>
                     <article class="tx-card tx-card--hint">
                         <p class="tx-subtle">

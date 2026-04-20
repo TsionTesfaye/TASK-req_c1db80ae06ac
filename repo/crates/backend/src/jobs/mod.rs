@@ -93,17 +93,33 @@ pub async fn retention_sweep_once(pool: &PgPool) -> AppResult<u64> {
             .execute(pool)
             .await?
             .rows_affected(),
-            // Audit #7 Issue #1: feedback retention is driven by 24
-            // months of *inactivity*, not the age of each feedback row.
-            // Delete feedback for candidates whose most recent feedback
-            // is older than the TTL window; touching a candidate inside
-            // the window preserves their entire feedback history.
+            // Audit #13 Issue #4: feedback retention is driven by
+            // inactive-*user* semantics (docs/design.md Design Decision
+            // #14 — "inactive-user feedback 24 months"). A feedback
+            // row is eligible for deletion when its owning user has
+            // been inactive for the TTL window: the most recent
+            // `sessions.issued_at` for that user is older than the
+            // TTL, or the user has no sessions at all *and* the
+            // user row itself is older than the TTL window. Touching
+            // a session inside the window preserves every feedback
+            // row that user authored. This replaces the earlier
+            // candidate-wide recent-activity proxy (Audit #7), which
+            // disagreed with the documented contract.
             "feedback" => sqlx::query(
                 "DELETE FROM talent_feedback \
-                 WHERE candidate_id IN ( \
-                     SELECT candidate_id FROM talent_feedback \
-                     GROUP BY candidate_id \
-                     HAVING MAX(created_at) < NOW() - ($1::int || ' days')::interval \
+                 WHERE owner_id IN ( \
+                     SELECT u.id FROM users u \
+                     LEFT JOIN ( \
+                         SELECT user_id, MAX(issued_at) AS last_issued \
+                         FROM sessions GROUP BY user_id \
+                     ) s ON s.user_id = u.id \
+                     WHERE ( \
+                         s.last_issued IS NOT NULL \
+                         AND s.last_issued < NOW() - ($1::int || ' days')::interval \
+                     ) OR ( \
+                         s.last_issued IS NULL \
+                         AND u.created_at < NOW() - ($1::int || ' days')::interval \
+                     ) \
                  )",
             )
             .bind(r.ttl_days)
@@ -145,9 +161,10 @@ pub fn start_metric_rollup(pool: PgPool) -> JoinHandle<()> {
 /// Perform a single rollup pass. Exposed for integration tests.
 ///
 /// Maps `metric_definitions.formula_kind` → `kpi_rollup_daily.metric_kind`:
-///   * `moving_average`  → `cycle_time`
-///   * `rate_of_change`  → `funnel_conversion`
-///   * `comfort_index`   → `efficiency_index`
+///   * `moving_average`          → `cycle_time`
+///   * `rate_of_change`          → `funnel_conversion`
+///   * `comfort_index`           → `efficiency_index`
+///   * `sku_on_shelf_compliance` → `sku_on_shelf_compliance`  (Audit #13 Issue #2)
 ///
 /// Idempotent: deletes any existing rows for the affected (day, metric_kind)
 /// pairs (with NULL site/department) inside a transaction, then re-inserts
@@ -165,6 +182,7 @@ pub async fn metric_rollup_once(pool: &PgPool) -> AppResult<u64> {
                         WHEN 'moving_average' THEN 'cycle_time' \
                         WHEN 'rate_of_change' THEN 'funnel_conversion' \
                         WHEN 'comfort_index'  THEN 'efficiency_index' \
+                        WHEN 'sku_on_shelf_compliance' THEN 'sku_on_shelf_compliance' \
                    END \
             FROM metric_computations mc \
             JOIN metric_definitions md ON md.id = mc.definition_id \
@@ -180,6 +198,7 @@ pub async fn metric_rollup_once(pool: &PgPool) -> AppResult<u64> {
                      WHEN 'moving_average' THEN 'cycle_time' \
                      WHEN 'rate_of_change' THEN 'funnel_conversion' \
                      WHEN 'comfort_index'  THEN 'efficiency_index' \
+                     WHEN 'sku_on_shelf_compliance' THEN 'sku_on_shelf_compliance' \
                 END AS metric_kind, \
                 AVG(mc.result)::double precision AS value \
          FROM metric_computations mc \

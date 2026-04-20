@@ -197,6 +197,27 @@ async fn t_int_retention_feedback_purges_expired() {
     .await
     .unwrap();
 
+    // Audit #13 Issue #4: retention is inactive-*user*, so simulate an
+    // owner who has been inactive beyond the TTL window by backdating
+    // every session `issued_at` for this owner and the user's own
+    // `created_at`. Without this, `authed(...)` would have minted a
+    // fresh session and the owner would count as active.
+    sqlx::query(
+        "UPDATE sessions SET issued_at = NOW() - INTERVAL '900 days' \
+         WHERE user_id = $1",
+    )
+    .bind(owner_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE users SET created_at = NOW() - INTERVAL '900 days' WHERE id = $1",
+    )
+    .bind(owner_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
     set_ttl(&ctx.pool, "feedback", 365).await;
 
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
@@ -207,13 +228,70 @@ async fn t_int_retention_feedback_purges_expired() {
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::OK);
     let body: Value = test::read_body_json(res).await;
-    // Only the 800-day row is strictly older than 365 days.
+    // Audit #13 Issue #4 — inactive-user semantics: because the owner
+    // has been inactive for 900 days (> 365-day TTL), every feedback
+    // row they authored is eligible for deletion regardless of that
+    // row's own age.
     let deleted = body["deleted"].as_i64().unwrap();
-    assert!(deleted >= 1, "expected >= 1 deleted, got {deleted}");
-    assert!(deleted <= 2, "expected <= 2 deleted, got {deleted}");
+    assert_eq!(deleted, 3, "expected all 3 rows purged, got {deleted}");
     let remaining =
         count(&ctx.pool, "SELECT COUNT(*)::BIGINT FROM talent_feedback").await;
-    assert!(remaining >= 1 && remaining <= 2);
+    assert_eq!(remaining, 0);
+}
+
+// ── RETENTION: feedback preserves ACTIVE user's history (Audit #13 Issue #4)
+
+#[actix_web::test]
+async fn t_int_retention_feedback_preserves_active_user_history() {
+    let ctx = TestCtx::new().await;
+    let (owner_id, token) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "ret-fb-active@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+
+    let (cand,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO candidates (full_name, email_mask, years_experience, skills, completeness_score) \
+         VALUES ('Active', 'a***@x.com', 3, '{}', 50) RETURNING id",
+    )
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+
+    // Seed two feedback rows — one very old, one fresh. Owner is ACTIVE
+    // (authed() minted a fresh session just above), so under the
+    // documented inactive-user rule the entire history must survive.
+    sqlx::query(
+        "INSERT INTO talent_feedback (candidate_id, owner_id, thumb, created_at) VALUES \
+            ($1, $2, 'up',   NOW() - INTERVAL '800 days'), \
+            ($1, $2, 'down', NOW() - INTERVAL '10 days')",
+    )
+    .bind(cand)
+    .bind(owner_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
+    set_ttl(&ctx.pool, "feedback", 365).await;
+
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::post()
+        .uri("/api/v1/retention/feedback/run")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    assert_eq!(
+        body["deleted"].as_i64().unwrap(),
+        0,
+        "active user's feedback must be preserved regardless of row age"
+    );
+    let remaining =
+        count(&ctx.pool, "SELECT COUNT(*)::BIGINT FROM talent_feedback").await;
+    assert_eq!(remaining, 2);
 }
 
 // ── RETENTION: audit is indefinite ───────────────────────────────────────────
@@ -522,6 +600,25 @@ async fn t_int_jobs_retention_sweep_enforces_all_domains() {
     .await
     .unwrap();
 
+    // Audit #13 Issue #4: feedback retention is inactive-*user* — push
+    // the seeded owner's sessions and account creation past the TTL so
+    // the feedback row is actually eligible for sweep deletion.
+    sqlx::query(
+        "UPDATE sessions SET issued_at = NOW() - INTERVAL '900 days' \
+         WHERE user_id = $1",
+    )
+    .bind(owner_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE users SET created_at = NOW() - INTERVAL '900 days' WHERE id = $1",
+    )
+    .bind(owner_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
     // Tighten TTLs to guarantee the seeded rows are expired.
     sqlx::query(
         "UPDATE retention_policies SET ttl_days = CASE domain \
@@ -768,31 +865,36 @@ async fn t_int_signed_image_url_rejects_forged_and_expired() {
     let api_path = format!("/api/v1/images/{img_id}");
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
 
-    // (a) missing sig+exp → 403
+    // Audit #13 Issue #1: P13 is now bearer-less by contract — the
+    // HMAC-bound `?u=<uuid>&exp=<unix>&sig=<hex>` query string itself
+    // is the authorization. Browser `<img src="…">` requests cannot
+    // attach `Authorization: Bearer …`, so we intentionally hit P13
+    // with no bearer here; the bearer on `token` is only used as
+    // incidental proof that the endpoint is reachable either way.
+    let _ = token; // kept for compile-symmetry with the authed() helper
+
+    // (a) missing u+sig+exp → 403
     let req = test::TestRequest::get()
         .uri(&api_path)
-        .insert_header(("Authorization", format!("Bearer {token}")))
         .to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "missing params");
 
     // (b) forged signature → 403
     let now = Utc::now().timestamp();
-    let forged = format!("{api_path}?exp={}&sig={}", now + 60, "deadbeef");
-    let req = test::TestRequest::get()
-        .uri(&forged)
-        .insert_header(("Authorization", format!("Bearer {token}")))
-        .to_request();
+    let forged = format!(
+        "{api_path}?u={}&exp={}&sig={}",
+        admin_uid.hyphenated(),
+        now + 60,
+        "deadbeef"
+    );
+    let req = test::TestRequest::get().uri(&forged).to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "forged sig");
 
     // (c) expired signature (valid HMAC but exp in the past) → 403
     let key = &ctx.keys.image_hmac;
     let past_exp = now - 10;
-    // Produce a real HMAC over (path, past_exp) using the production signer
-    // internals: sign() clamps future ttl, so we build via verify contract.
-    // We use the crypto::signed_url module directly via sign() with ttl=1
-    // then wait? Simpler: forge manually.
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type H = Hmac<Sha256>;
@@ -803,39 +905,41 @@ async fn t_int_signed_image_url_rejects_forged_and_expired() {
     mac.update(b"|");
     mac.update(past_exp.to_string().as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
-    let expired = format!("{api_path}?exp={past_exp}&sig={sig}");
-    let req = test::TestRequest::get()
-        .uri(&expired)
-        .insert_header(("Authorization", format!("Bearer {token}")))
-        .to_request();
+    let expired = format!(
+        "{api_path}?u={}&exp={past_exp}&sig={sig}",
+        admin_uid.hyphenated()
+    );
+    let req = test::TestRequest::get().uri(&expired).to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "expired sig");
 
     // (d) valid sig but unknown image id → 404 (proves verify path accepted
-    //     the signature, then the row lookup failed)
+    //     the signature, then the row lookup failed) — and still with no
+    //     bearer, which is the whole point of the new contract.
     let qs = signed_url::sign(&api_path, admin_uid, 300, key);
     let req = test::TestRequest::get()
         .uri(&format!("{api_path}?{qs}"))
-        .insert_header(("Authorization", format!("Bearer {token}")))
         .to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "valid sig, missing row");
 }
 
-// Audit #11 issue #1: a signed image URL minted for user A must not be
-// accepted when replayed by another authenticated user B, even within the
-// URL's exp window. The HMAC binds to the authenticated caller's user id.
+// Audit #13 Issue #1: under the new signed-URL contract, the `u=<uuid>`
+// parameter is part of the wire URL. Tampering with it (e.g. pasting
+// Bob's id in place of Alice's) must fail at HMAC verify → 403. This
+// supersedes the old bearer-cross-replay test: there is no bearer on
+// P13 anymore (browsers cannot attach one to `<img src="…">`).
 #[actix_web::test]
-async fn t_int_signed_image_url_rejects_cross_user_replay() {
+async fn t_int_signed_image_url_rejects_tampered_u() {
     let ctx = TestCtx::new().await;
-    let (alice_uid, alice_token) = authed(
+    let (alice_uid, _alice_token) = authed(
         &ctx.pool,
         &ctx.keys,
         "signed-url-alice@example.com",
         &[Role::Administrator],
     )
     .await;
-    let (_bob_uid, bob_token) = authed(
+    let (bob_uid, _bob_token) = authed(
         &ctx.pool,
         &ctx.keys,
         "signed-url-bob@example.com",
@@ -848,27 +952,27 @@ async fn t_int_signed_image_url_rejects_cross_user_replay() {
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
 
     // Alice mints a URL for herself.
-    let qs = signed_url::sign(&api_path, alice_uid, 300, &ctx.keys.image_hmac);
-
-    // Alice's own usage: signature passes; image row is missing → 404 (proves
-    // the verifier accepted the signature before row lookup).
+    let qs_alice = signed_url::sign(&api_path, alice_uid, 300, &ctx.keys.image_hmac);
+    // Alice's own URL: signature passes; image row missing → 404.
     let req = test::TestRequest::get()
-        .uri(&format!("{api_path}?{qs}"))
-        .insert_header(("Authorization", format!("Bearer {alice_token}")))
+        .uri(&format!("{api_path}?{qs_alice}"))
         .to_request();
     let res = test::call_service(&app, req).await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "alice's own URL verifies");
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "alice's URL verifies");
 
-    // Bob replays Alice's URL within its exp window → 403.
-    let req = test::TestRequest::get()
-        .uri(&format!("{api_path}?{qs}"))
-        .insert_header(("Authorization", format!("Bearer {bob_token}")))
-        .to_request();
+    // Tamper `u=` to Bob's id while keeping Alice's exp+sig → 403.
+    // (Equivalent to the prior cross-user-replay negative.)
+    let (_u, exp, sig) = signed_url::parse_query(&qs_alice).unwrap();
+    let tampered = format!(
+        "{api_path}?u={}&exp={exp}&sig={sig}",
+        bob_uid.hyphenated()
+    );
+    let req = test::TestRequest::get().uri(&tampered).to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(
         res.status(),
         StatusCode::FORBIDDEN,
-        "bob cannot replay alice's signed URL"
+        "tampering u= with bob's id must fail HMAC verify"
     );
 }
 

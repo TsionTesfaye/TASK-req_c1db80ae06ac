@@ -281,13 +281,17 @@ async fn deep_jobs_metric_rollup_maps_formula_kinds_to_metric_kinds() {
     let ma = seed_metric_def(&ctx.pool, "moving_average").await;
     let roc = seed_metric_def(&ctx.pool, "rate_of_change").await;
     let ci = seed_metric_def(&ctx.pool, "comfort_index").await;
+    // Audit #13 Issue #2: sku_on_shelf_compliance is a first-class formula
+    // kind; the rollup mapping must surface it as its own metric_kind.
+    let sku = seed_metric_def(&ctx.pool, "sku_on_shelf_compliance").await;
     insert_computation(&ctx.pool, ma, 10.0, now).await;
     insert_computation(&ctx.pool, ma, 20.0, now).await;
     insert_computation(&ctx.pool, roc, 0.5, now).await;
     insert_computation(&ctx.pool, ci, 80.0, now).await;
+    insert_computation(&ctx.pool, sku, 97.5, now).await;
 
     let inserted = jobs::metric_rollup_once(&ctx.pool).await.unwrap();
-    assert!(inserted >= 3);
+    assert!(inserted >= 4);
 
     // kpi_rollup_daily rows exist with mapped metric_kinds.
     let kinds: Vec<(String,)> = sqlx::query_as(
@@ -297,7 +301,12 @@ async fn deep_jobs_metric_rollup_maps_formula_kinds_to_metric_kinds() {
     .await
     .unwrap();
     let kinds: Vec<String> = kinds.into_iter().map(|(k,)| k).collect();
-    for expected in ["cycle_time", "efficiency_index", "funnel_conversion"] {
+    for expected in [
+        "cycle_time",
+        "efficiency_index",
+        "funnel_conversion",
+        "sku_on_shelf_compliance",
+    ] {
         assert!(kinds.contains(&expected.to_string()), "missing {expected} in {kinds:?}");
     }
 
@@ -310,7 +319,7 @@ async fn deep_jobs_metric_rollup_maps_formula_kinds_to_metric_kinds() {
     .fetch_one(&ctx.pool)
     .await
     .unwrap();
-    assert_eq!(total, 3, "idempotent: same 3 (day, kind) rows");
+    assert_eq!(total, 4, "idempotent: same 4 (day, kind) rows");
 }
 
 #[actix_web::test]
