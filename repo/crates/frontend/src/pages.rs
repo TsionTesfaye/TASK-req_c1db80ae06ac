@@ -30,6 +30,22 @@ use crate::components::{
 use crate::router::Route;
 use crate::state::{AuthContext, AuthState, ToastContext};
 
+/// Format a timestamp for UI display in the required MM/DD/YYYY 12-hour
+/// format — e.g. `04/20/2026 02:05 PM`. Renders in UTC, matching the
+/// offline-single-node deployment model where there is no per-user
+/// timezone preference surfaced to the SPA. Wrapper so every call site
+/// renders consistently and a future timezone-aware override lives in one
+/// place.
+pub(crate) fn format_ts(dt: chrono::DateTime<chrono::Utc>) -> String {
+    dt.format("%m/%d/%Y %I:%M %p").to_string()
+}
+
+/// Same contract as `format_ts` but for `Option<DateTime<Utc>>`; falls back
+/// to an em-dash when the timestamp is absent.
+pub(crate) fn format_ts_opt(dt: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    dt.map(format_ts).unwrap_or_else(|| "—".into())
+}
+
 // ===========================================================================
 // auth::Login
 // ===========================================================================
@@ -948,7 +964,7 @@ pub mod admin {
         };
 
         let last = p.last_enforced_at
-            .map(|d| d.to_rfc3339())
+            .map(|d| format_ts(d))
             .unwrap_or_else(|| "never".to_string());
 
         html! {
@@ -1051,7 +1067,7 @@ pub mod admin {
                         <div class="tx-row-between">
                             <div>
                                 <h2 class="tx-title tx-title--sm">{ "Enforcement" }</h2>
-                                <div class="tx-subtle">{ format!("Last updated: {}", m.updated_at.to_rfc3339()) }</div>
+                                <div class="tx-subtle">{ format!("Last updated: {}", format_ts(m.updated_at)) }</div>
                             </div>
                             <div class="tx-row-actions">
                                 if enforced {
@@ -1125,7 +1141,7 @@ pub mod admin {
                     AttrValue::from("Action"), AttrValue::from("Target"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|e| vec![
-                    html!{ <span class="tx-mono">{ e.at.to_rfc3339() }</span> },
+                    html!{ <span class="tx-mono">{ format_ts(e.at) }</span> },
                     html!{ { e.actor_display.clone().unwrap_or_else(|| "—".into()) } },
                     html!{ <code>{ e.action.clone() }</code> },
                     html!{ { format!("{}/{}",
@@ -1258,7 +1274,7 @@ pub mod notifications {
                         <span>{ n.title.clone() }</span>
                     </div>
                     <p class="tx-subtle">{ n.body.clone() }</p>
-                    <div class="tx-subtle tx-mono">{ n.created_at.to_rfc3339() }</div>
+                    <div class="tx-subtle tx-mono">{ format_ts(n.created_at) }</div>
                 </div>
                 if unread {
                     <button class="tx-btn tx-btn--ghost" onclick={mark_read}>{ "Mark read" }</button>
@@ -1433,7 +1449,7 @@ pub mod monitoring {
                     AttrValue::from("Agent"), AttrValue::from("Stack"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|c| vec![
-                    html!{ <span class="tx-mono">{ c.reported_at.to_rfc3339() }</span> },
+                    html!{ <span class="tx-mono">{ format_ts(c.reported_at) }</span> },
                     html!{ { c.page.clone().unwrap_or_else(|| "—".into()) } },
                     html!{ <span class="tx-mono tx-truncate">{ c.agent.clone().unwrap_or_else(|| "—".into()) }</span> },
                     html!{ <pre class="tx-pre">{ c.stack.clone().unwrap_or_else(|| "—".into()) }</pre> },
@@ -1660,7 +1676,7 @@ pub mod data_steward {
                                 (p.price_cents as f64) / 100.0) }
                         },
                         html! { if p.on_shelf { {"✔"} } else { {"—"} } },
-                        html! { <span class="tx-mono">{ p.updated_at.to_rfc3339() }</span> },
+                        html! { <span class="tx-mono">{ format_ts(p.updated_at) }</span> },
                     ]
                 }).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No products."/> }
@@ -1853,7 +1869,7 @@ pub mod data_steward {
                     vec![
                         html! { <code class="tx-mono">{ t.state_code.clone() }</code> },
                         html! { { format!("{} ({:.2}%)", t.rate_bp, (t.rate_bp as f64) / 100.0) } },
-                        html! { <span class="tx-mono">{ t.updated_at.to_rfc3339() }</span> },
+                        html! { <span class="tx-mono">{ format_ts(t.updated_at) }</span> },
                         html! {
                             if can_manage {
                                 <button class="tx-btn tx-btn--ghost" onclick={ondel}>
@@ -1923,7 +1939,7 @@ pub mod data_steward {
                             AttrValue::from("By"),
                         ];
                         let hrows: Vec<Vec<Html>> = rows.iter().map(|h| vec![
-                            html! { <span class="tx-mono">{ h.changed_at.to_rfc3339() }</span> },
+                            html! { <span class="tx-mono">{ format_ts(h.changed_at) }</span> },
                             html! { <span class="tx-chip">{ h.action.clone() }</span> },
                             html! { {
                                 h.changed_by_name.clone()
@@ -1963,7 +1979,7 @@ pub mod data_steward {
                             <div class="tx-kv"><span>{ "On shelf" }</span>
                                 <span>{ if p.on_shelf { "yes" } else { "no" } }</span></div>
                             <div class="tx-kv"><span>{ "Updated" }</span>
-                                <span class="tx-mono">{ p.updated_at.to_rfc3339() }</span></div>
+                                <span class="tx-mono">{ format_ts(p.updated_at) }</span></div>
                             if can_manage {
                                 <button class="tx-btn tx-btn--ghost" onclick={toggle_shelf}>
                                     { if p.on_shelf { "Take off shelf" } else { "Put on shelf" } }
@@ -2070,7 +2086,7 @@ pub mod data_steward {
                         html! { <span class="tx-chip">{ b.status.clone() }</span> },
                         html! { { b.row_count } },
                         html! { { b.error_count } },
-                        html! { <span class="tx-mono">{ b.created_at.to_rfc3339() }</span> },
+                        html! { <span class="tx-mono">{ format_ts(b.created_at) }</span> },
                     ]
                 }).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No import batches yet."/> }
@@ -2325,7 +2341,7 @@ pub mod analyst {
                 let trows: Vec<Vec<Html>> = rows.iter().map(|s| vec![
                     html! { { s.name.clone() } },
                     html! { <span class="tx-chip">{ s.kind.clone() }</span> },
-                    html! { <span class="tx-mono">{ s.updated_at.to_rfc3339() }</span> },
+                    html! { <span class="tx-mono">{ format_ts(s.updated_at) }</span> },
                 ]).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No sources yet."/> }
             }
@@ -2378,7 +2394,7 @@ pub mod analyst {
                     AttrValue::from("Value"), AttrValue::from("Unit"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|o| vec![
-                    html! { <span class="tx-mono">{ o.observed_at.to_rfc3339() }</span> },
+                    html! { <span class="tx-mono">{ format_ts(o.observed_at) }</span> },
                     html! { <span class="tx-mono tx-truncate">{ o.source_id.to_string() }</span> },
                     html! { { format!("{:.3}", o.value) } },
                     html! { { o.unit.clone() } },
@@ -2513,7 +2529,7 @@ pub mod analyst {
                         None => html! { <span class="tx-subtle">{ "live" }</span> },
                     };
                     vec![
-                        html! { <span class="tx-mono">{ p.at.to_rfc3339() }</span> },
+                        html! { <span class="tx-mono">{ format_ts(p.at) }</span> },
                         html! { { format!("{:.3}", p.value) } },
                         why,
                     ]
@@ -2590,7 +2606,7 @@ pub mod analyst {
                 ];
                 let trows: Vec<Vec<Html>> = l.input_observations.iter().map(|o| vec![
                     html! { <code class="tx-mono">{ o.observation_id.to_string() }</code> },
-                    html! { <span class="tx-mono">{ o.observed_at.to_rfc3339() }</span> },
+                    html! { <span class="tx-mono">{ format_ts(o.observed_at) }</span> },
                     html! { { format!("{:.4}", o.value) } },
                 ]).collect();
                 let align = l.alignment
@@ -2622,11 +2638,11 @@ pub mod analyst {
                             <div class="tx-kv"><span>{ "Window" }</span>
                                 <span class="tx-mono">
                                     { format!("{} → {}",
-                                        l.window_start.to_rfc3339(),
-                                        l.window_end.to_rfc3339()) }
+                                        format_ts(l.window_start),
+                                        format_ts(l.window_end)) }
                                 </span></div>
                             <div class="tx-kv"><span>{ "Computed at" }</span>
-                                <span class="tx-mono">{ l.computed_at.to_rfc3339() }</span></div>
+                                <span class="tx-mono">{ format_ts(l.computed_at) }</span></div>
                             <div class="tx-kv"><span>{ "Alignment" }</span><span>{ align }</span></div>
                             <div class="tx-kv"><span>{ "Confidence" }</span><span>{ conf }</span></div>
                             <div class="tx-kv"><span>{ "Params" }</span>
@@ -2795,7 +2811,7 @@ pub mod analyst {
                     </article>
                     <article class="tx-card tx-card--hint">
                         <p class="tx-subtle">
-                            { format!("Generated {}", s.generated_at.to_rfc3339()) }
+                            { format!("Generated {}", format_ts(s.generated_at)) }
                         </p>
                     </article>
                 </section>
@@ -3266,7 +3282,7 @@ pub mod analyst {
                         }</span> },
                         html! { <span class="tx-chip">{ j.status.clone() }</span> },
                         html! { <span class="tx-mono">{
-                            j.last_run_at.map(|t| t.to_rfc3339()).unwrap_or_else(|| "—".into())
+                            j.last_run_at.map(|t| format_ts(t)).unwrap_or_else(|| "—".into())
                         }</span> },
                         html! {
                             <div class="tx-row-actions">
@@ -3400,7 +3416,7 @@ pub mod user {
                     let onclick = Callback::from(move |_: MouseEvent| ack.emit(eid));
                     let acked = ev.acked_at.is_some();
                     vec![
-                        html! { <span class="tx-mono">{ ev.fired_at.to_rfc3339() }</span> },
+                        html! { <span class="tx-mono">{ format_ts(ev.fired_at) }</span> },
                         html! { <span class="tx-chip">{ ev.severity.clone() }</span> },
                         html! { { format!("{:.3}", ev.value) } },
                         html! { if acked { {"✔"} } else { {"—"} } },
@@ -3755,7 +3771,7 @@ pub mod recruiter {
                     <div class="tx-kv"><span>{ "Completeness" }</span>
                         <span>{ format!("{}%", c.completeness_score) }</span></div>
                     <div class="tx-kv"><span>{ "Last active" }</span>
-                        <span class="tx-mono">{ c.last_active_at.to_rfc3339() }</span></div>
+                        <span class="tx-mono">{ format_ts(c.last_active_at) }</span></div>
                     if can_feedback {
                         <div class="tx-form">
                             <label class="tx-subtle">{ "Note (optional)" }</label>
@@ -3918,7 +3934,7 @@ pub mod recruiter {
                         </span>
                     },
                     html! { <span class="tx-chip">{ r.status.clone() }</span> },
-                    html! { <span class="tx-mono">{ r.opened_at.to_rfc3339() }</span> },
+                    html! { <span class="tx-mono">{ format_ts(r.opened_at) }</span> },
                 ]).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No open roles."/> }
             }
@@ -4217,8 +4233,8 @@ pub mod recruiter {
                 let trows: Vec<Vec<Html>> = rows.iter().map(|w| vec![
                     html! { { w.name.clone() } },
                     html! { { w.item_count } },
-                    html! { <span class="tx-mono">{ w.created_at.to_rfc3339() }</span> },
-                    html! { <span class="tx-mono">{ w.updated_at.to_rfc3339() }</span> },
+                    html! { <span class="tx-mono">{ format_ts(w.created_at) }</span> },
+                    html! { <span class="tx-mono">{ format_ts(w.updated_at) }</span> },
                 ]).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No watchlists yet."/> }
             }

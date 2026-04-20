@@ -13,10 +13,13 @@ test("analyst reaches alert rules + alerts feed + notification center", async ({
     await page.click("button[type=submit]");
     await expect(page).toHaveURL(/\/dashboard|\/$/, { timeout: 10_000 });
 
-    await page.goto("/analyst/alert-rules");
+    // SPA routes are flat per `crates/frontend/src/router.rs`:
+    //   analyst alert rules → `/alerts/rules`
+    //   end-user alerts feed → `/alerts/events`
+    await page.goto("/alerts/rules");
     await expect(page.locator("body")).toContainText(/alert/i);
 
-    await page.goto("/user/alerts");
+    await page.goto("/alerts/events");
     await expect(page.locator("body")).toContainText(/alert/i);
 
     await page.goto("/notifications");

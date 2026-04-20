@@ -327,50 +327,60 @@ async fn get_series(
             match def.formula_kind.as_str() {
                 "moving_average" => {
                     let sid = def.source_ids[0];
-                    let pts = sources::fetch_window(&state.pool, sid, window_start, now).await?;
-                    super::formula::moving_average(&pts, def.window_seconds as i64, now).map(
-                        |v| {
-                            persist_computation_bg(
-                                state.pool.clone(),
-                                def_id,
-                                v,
-                                &pts,
-                                window_start,
-                                now,
-                                None,
-                                None,
-                            );
-                            terraops_shared::dto::metric::SeriesPoint { at: now, value: v, computation_id: None }
-                        },
-                    )
-                }
-                "rate_of_change" => {
-                    let sid = def.source_ids[0];
-                    let pts = sources::fetch_window(&state.pool, sid, window_start, now).await?;
-                    super::formula::rate_of_change(&pts, def.window_seconds as i64, now).map(|v| {
-                        persist_computation_bg(
+                    let samples =
+                        sources::fetch_window(&state.pool, sid, window_start, now).await?;
+                    let pts = sources::formula_points(&samples);
+                    super::formula::moving_average(&pts, def.window_seconds as i64, now).map(|v| {
+                        let cid = persist_computation_bg(
                             state.pool.clone(),
                             def_id,
                             v,
-                            &pts,
+                            &samples,
                             window_start,
                             now,
                             None,
                             None,
                         );
-                        terraops_shared::dto::metric::SeriesPoint { at: now, value: v, computation_id: None }
+                        terraops_shared::dto::metric::SeriesPoint {
+                            at: now,
+                            value: v,
+                            computation_id: Some(cid),
+                        }
+                    })
+                }
+                "rate_of_change" => {
+                    let sid = def.source_ids[0];
+                    let samples =
+                        sources::fetch_window(&state.pool, sid, window_start, now).await?;
+                    let pts = sources::formula_points(&samples);
+                    super::formula::rate_of_change(&pts, def.window_seconds as i64, now).map(|v| {
+                        let cid = persist_computation_bg(
+                            state.pool.clone(),
+                            def_id,
+                            v,
+                            &samples,
+                            window_start,
+                            now,
+                            None,
+                            None,
+                        );
+                        terraops_shared::dto::metric::SeriesPoint {
+                            at: now,
+                            value: v,
+                            computation_id: Some(cid),
+                        }
                     })
                 }
                 "comfort_index" => {
                     if def.source_ids.len() >= 2 {
-                        let temp_pts = sources::fetch_window(
+                        let temp = sources::fetch_window(
                             &state.pool,
                             def.source_ids[0],
                             window_start,
                             now,
                         )
                         .await?;
-                        let hum_pts = sources::fetch_window(
+                        let hum = sources::fetch_window(
                             &state.pool,
                             def.source_ids[1],
                             window_start,
@@ -380,7 +390,7 @@ async fn get_series(
                         // Optional 3rd source: air speed (m/s). Missing is
                         // tolerated — the extended formula returns lower
                         // confidence rather than None.
-                        let air_pts = if def.source_ids.len() >= 3 {
+                        let air = if def.source_ids.len() >= 3 {
                             Some(
                                 sources::fetch_window(
                                     &state.pool,
@@ -393,6 +403,9 @@ async fn get_series(
                         } else {
                             None
                         };
+                        let temp_pts = sources::formula_points(&temp);
+                        let hum_pts = sources::formula_points(&hum);
+                        let air_pts = air.as_ref().map(|a| sources::formula_points(a));
                         super::formula::comfort_index_ext(
                             &temp_pts,
                             &hum_pts,
@@ -401,16 +414,16 @@ async fn get_series(
                             now,
                         )
                         .map(|out| {
-                            let mut all_pts: Vec<_> =
-                                temp_pts.iter().chain(hum_pts.iter()).cloned().collect();
-                            if let Some(a) = air_pts.as_ref() {
-                                all_pts.extend(a.iter().cloned());
+                            let mut all_samples: Vec<_> =
+                                temp.iter().chain(hum.iter()).cloned().collect();
+                            if let Some(a) = air.as_ref() {
+                                all_samples.extend(a.iter().cloned());
                             }
-                            persist_computation_bg(
+                            let cid = persist_computation_bg(
                                 state.pool.clone(),
                                 def_id,
                                 out.value,
-                                &all_pts,
+                                &all_samples,
                                 window_start,
                                 now,
                                 Some(out.alignment),
@@ -419,7 +432,7 @@ async fn get_series(
                             terraops_shared::dto::metric::SeriesPoint {
                                 at: now,
                                 value: out.value,
-                                computation_id: None,
+                                computation_id: Some(cid),
                             }
                         })
                     } else {
@@ -447,6 +460,14 @@ async fn get_series(
 }
 
 /// Fire-and-forget: persist a computation result in the background.
+///
+/// The caller mints a fresh `Uuid::new_v4()` here so the returned
+/// `computation_id` can be stamped on the live `SeriesPoint` **before** the
+/// async INSERT finishes. The UI follows the same id to
+/// `/metrics/computations/{id}/lineage` and reads back the complete input
+/// observation list — including each `observation_id`, not just `observed_at`
+/// + `value` — closing the audit #3 "why this value" lineage gap.
+///
 /// `alignment` and `confidence` are optional — moving_average and
 /// rate_of_change pass `None`; comfort_index_ext passes the real values.
 #[allow(clippy::too_many_arguments)]
@@ -454,25 +475,32 @@ fn persist_computation_bg(
     pool: sqlx::postgres::PgPool,
     definition_id: Uuid,
     result: f64,
-    pts: &[(DateTime<Utc>, f64)],
+    samples: &[sources::WindowSample],
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
     alignment: Option<f64>,
     confidence: Option<f64>,
-) {
-    let inputs: Value = serde_json::json!(pts
+) -> Uuid {
+    let computation_id = Uuid::new_v4();
+    let inputs: Value = serde_json::json!(samples
         .iter()
-        .map(|(at, v)| json!({"observed_at": at.to_rfc3339(), "value": v}))
+        .map(|s| json!({
+            "observation_id": s.observation_id.to_string(),
+            "observed_at": s.observed_at.to_rfc3339(),
+            "value": s.value,
+        }))
         .collect::<Vec<_>>());
     let ws = window_start;
     let we = window_end;
     let did = definition_id;
+    let cid = computation_id;
     tokio::spawn(async move {
         let _ = definitions::save_computation(
-            &pool, did, result, inputs, ws, we, alignment, confidence,
+            &pool, cid, did, result, inputs, ws, we, alignment, confidence,
         )
         .await;
     });
+    computation_id
 }
 
 // ===========================================================================

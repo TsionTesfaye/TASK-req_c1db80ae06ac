@@ -15,4 +15,9 @@ pub struct AppState {
     pub keys: Arc<RuntimeKeys>,
     pub static_dir: PathBuf,
     pub default_timezone: String,
+    /// Runtime directory for locally-materialized artifacts (mailbox .mbox
+    /// exports, signed images, etc). Populated from
+    /// `Config::runtime_dir`; defaults to `/runtime` in Docker and to the
+    /// test runtime dir when under `Config::for_testing`.
+    pub runtime_dir: PathBuf,
 }

@@ -161,8 +161,16 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid) -> AppResult<()> {
 
 /// Store a completed computation in `metric_computations`, including the
 /// optional `alignment` + `confidence` quality dimensions (migration 0023).
+///
+/// `id` is supplied by the caller so the same value can be stamped on the
+/// live `SeriesPoint.computation_id` **and** used to locate the row later
+/// via the `/metrics/computations/{id}/lineage` endpoint. Collisions on the
+/// primary key would be an application-level bug (every caller must mint a
+/// fresh `Uuid::new_v4()`).
+#[allow(clippy::too_many_arguments)]
 pub async fn save_computation(
     pool: &PgPool,
+    id: Uuid,
     definition_id: Uuid,
     result: f64,
     inputs: Value,
@@ -173,9 +181,10 @@ pub async fn save_computation(
 ) -> AppResult<Uuid> {
     let row: (Uuid,) = sqlx::query_as(
         "INSERT INTO metric_computations \
-            (definition_id, result, inputs, window_start, window_end, alignment, confidence) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            (id, definition_id, result, inputs, window_start, window_end, alignment, confidence) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
+    .bind(id)
     .bind(definition_id)
     .bind(result)
     .bind(inputs)

@@ -80,11 +80,17 @@ impl TestCtx {
         ensure_migrated(&pool).await;
         truncate_dynamic_tables(&pool).await;
         let keys = Arc::new(RuntimeKeys::for_testing());
+        let runtime_dir = PathBuf::from(format!(
+            "/tmp/terraops-test-runtime-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::create_dir_all(&runtime_dir);
         let state = AppState {
             pool: pool.clone(),
             keys: keys.clone(),
             static_dir: PathBuf::from("/tmp/terraops-test-dist"),
             default_timezone: "America/New_York".into(),
+            runtime_dir,
         };
         Self {
             pool,

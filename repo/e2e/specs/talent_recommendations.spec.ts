@@ -12,8 +12,10 @@ test("recruiter reaches talent surfaces", async ({ page }) => {
     await page.click("button[type=submit]");
     await expect(page).toHaveURL(/\/dashboard|\/$/, { timeout: 10_000 });
 
+    // SPA routes are flat per `crates/frontend/src/router.rs`: the recruiter
+    // surfaces live under `/talent/*`, not `/recruiter/*`.
     for (const slug of ["candidates", "roles", "recommendations", "weights", "watchlists"]) {
-        await page.goto(`/recruiter/${slug}`);
+        await page.goto(`/talent/${slug}`);
         await expect(page.locator("body")).toContainText(new RegExp(slug, "i"));
     }
 });

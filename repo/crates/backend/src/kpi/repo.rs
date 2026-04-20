@@ -5,6 +5,19 @@
 //! `kpi_rollup_daily`. This keeps P-B self-contained. The rollup job would
 //! write to `kpi_rollup_daily` as an optimisation; the handlers fall back to
 //! on-demand queries when no cached row exists.
+//!
+//! Filter semantics (audit #3 Issue 1):
+//!   * `site_id` / `department_id` — a metric definition "belongs to" a site
+//!     or department when any of its `source_ids` resolves to an
+//!     `env_sources` row whose `site_id` / `department_id` matches the
+//!     filter. `alert_events` inherit the site/dept of their rule's metric
+//!     definition. `metric_computations` inherit from their own
+//!     `definition_id`.
+//!   * `category` — matches `metric_definitions.formula_kind` (the honest
+//!     KPI-level category axis: `moving_average`, `rate_of_change`,
+//!     `comfort_index`). Free-text category values that do not match any
+//!     known formula_kind simply return no rows, which is the correct
+//!     behavior for an unknown slice.
 
 use chrono::{NaiveDate, Utc};
 use sqlx::PgPool;
@@ -80,23 +93,68 @@ pub async fn summary(pool: &PgPool) -> AppResult<KpiSummary> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared slice filter — alert_events / metric_computations joined through
+// metric_definitions.source_ids → env_sources.
+// ---------------------------------------------------------------------------
+//
+// The three site/department/category predicates below are attached with
+// boolean short-circuit: when the filter is NULL the predicate is TRUE
+// (no filtering). When present, the filter is applied as an EXISTS join.
+//
+// `ae_def_id_expr` is the metric_definition_id for alert_events — reached
+// via `alert_rules.metric_definition_id`. `mc_def_id_expr` is
+// `metric_computations.definition_id`.
+
+/// Filter fragment for alert-events queries. Expects the following bind
+/// order in the outer SQL: `$site, $dept, $category`. Must be wrapped with
+/// a rule-id-to-definition-id join via the `def_ids_for_alert_events` CTE
+/// declared in every query using it.
+const ALERT_DEF_FILTER: &str = "\
+    AND ($1::uuid IS NULL OR EXISTS (\
+        SELECT 1 FROM metric_definitions md \
+        JOIN alert_rules ar ON ar.metric_definition_id = md.id \
+        JOIN env_sources es ON es.id = ANY(md.source_ids) \
+        WHERE ar.id = ae.rule_id AND es.site_id = $1)) \
+    AND ($2::uuid IS NULL OR EXISTS (\
+        SELECT 1 FROM metric_definitions md \
+        JOIN alert_rules ar ON ar.metric_definition_id = md.id \
+        JOIN env_sources es ON es.id = ANY(md.source_ids) \
+        WHERE ar.id = ae.rule_id AND es.department_id = $2)) \
+    AND ($3::text IS NULL OR EXISTS (\
+        SELECT 1 FROM metric_definitions md \
+        JOIN alert_rules ar ON ar.metric_definition_id = md.id \
+        WHERE ar.id = ae.rule_id AND md.formula_kind = $3))";
+
+/// Filter fragment for metric_computations queries. Same bind order
+/// `$site, $dept, $category`.
+const MC_DEF_FILTER: &str = "\
+    AND ($1::uuid IS NULL OR EXISTS (\
+        SELECT 1 FROM metric_definitions md \
+        JOIN env_sources es ON es.id = ANY(md.source_ids) \
+        WHERE md.id = mc.definition_id AND es.site_id = $1)) \
+    AND ($2::uuid IS NULL OR EXISTS (\
+        SELECT 1 FROM metric_definitions md \
+        JOIN env_sources es ON es.id = ANY(md.source_ids) \
+        WHERE md.id = mc.definition_id AND es.department_id = $2)) \
+    AND ($3::text IS NULL OR EXISTS (\
+        SELECT 1 FROM metric_definitions md \
+        WHERE md.id = mc.definition_id AND md.formula_kind = $3))";
+
+// ---------------------------------------------------------------------------
 // K2 — Cycle Time
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cycle_time(
     pool: &PgPool,
     site_id: Option<Uuid>,
     department_id: Option<Uuid>,
+    category: Option<&str>,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     limit: i64,
     offset: i64,
 ) -> AppResult<(Vec<CycleTimeRow>, i64)> {
-    // Cycle time per day: mean hours from fired_at to resolved_at.
-    // When site/dept filters are provided, we join through alert_rules →
-    // metric_definitions → env_sources; but env_sources may not be wired yet
-    // if no definitions/sources exist. We degrade gracefully by using
-    // direct alert_events aggregation when site/dept are null.
     #[derive(sqlx::FromRow)]
     struct Row {
         day: NaiveDate,
@@ -107,35 +165,47 @@ pub async fn cycle_time(
     let from_ts = from.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
     let to_ts = to.map(|d| d.and_hms_opt(23, 59, 59).unwrap().and_utc());
 
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT DATE(fired_at AT TIME ZONE 'UTC') AS day, \
-                (AVG(EXTRACT(EPOCH FROM (resolved_at - fired_at)) / 3600.0))::FLOAT8 AS avg_hours, \
+    let sql = format!(
+        "SELECT DATE(ae.fired_at AT TIME ZONE 'UTC') AS day, \
+                (AVG(EXTRACT(EPOCH FROM (ae.resolved_at - ae.fired_at)) / 3600.0))::FLOAT8 AS avg_hours, \
                 COUNT(*)::BIGINT AS cnt \
-         FROM alert_events \
-         WHERE resolved_at IS NOT NULL \
-           AND ($1::timestamptz IS NULL OR fired_at >= $1) \
-           AND ($2::timestamptz IS NULL OR fired_at <= $2) \
+         FROM alert_events ae \
+         WHERE ae.resolved_at IS NOT NULL \
+           AND ($4::timestamptz IS NULL OR ae.fired_at >= $4) \
+           AND ($5::timestamptz IS NULL OR ae.fired_at <= $5) \
+           {filter} \
          GROUP BY day \
-         ORDER BY day DESC LIMIT $3 OFFSET $4",
-    )
-    .bind(from_ts)
-    .bind(to_ts)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+         ORDER BY day DESC LIMIT $6 OFFSET $7",
+        filter = ALERT_DEF_FILTER
+    );
+    let rows: Vec<Row> = sqlx::query_as(&sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(category)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
-    let total: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT DATE(fired_at AT TIME ZONE 'UTC'))::BIGINT \
-         FROM alert_events \
-         WHERE resolved_at IS NOT NULL \
-           AND ($1::timestamptz IS NULL OR fired_at >= $1) \
-           AND ($2::timestamptz IS NULL OR fired_at <= $2)",
-    )
-    .bind(from_ts)
-    .bind(to_ts)
-    .fetch_one(pool)
-    .await?;
+    let total_sql = format!(
+        "SELECT COUNT(DISTINCT DATE(ae.fired_at AT TIME ZONE 'UTC'))::BIGINT \
+         FROM alert_events ae \
+         WHERE ae.resolved_at IS NOT NULL \
+           AND ($4::timestamptz IS NULL OR ae.fired_at >= $4) \
+           AND ($5::timestamptz IS NULL OR ae.fired_at <= $5) \
+           {filter}",
+        filter = ALERT_DEF_FILTER
+    );
+    let total: (i64,) = sqlx::query_as(&total_sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(category)
+        .bind(from_ts)
+        .bind(to_ts)
+        .fetch_one(pool)
+        .await?;
 
     let out = rows
         .into_iter()
@@ -207,8 +277,12 @@ pub async fn funnel(pool: &PgPool) -> AppResult<FunnelResponse> {
 // K4 — Anomalies
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn anomalies(
     pool: &PgPool,
+    site_id: Option<Uuid>,
+    department_id: Option<Uuid>,
+    category: Option<&str>,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     limit: i64,
@@ -223,38 +297,50 @@ pub async fn anomalies(
     let from_ts = from.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
     let to_ts = to.map(|d| d.and_hms_opt(23, 59, 59).unwrap().and_utc());
 
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT DATE(fired_at AT TIME ZONE 'UTC') AS day, COUNT(*)::BIGINT AS cnt \
-         FROM alert_events \
-         WHERE resolved_at IS NULL \
-           AND ($1::timestamptz IS NULL OR fired_at >= $1) \
-           AND ($2::timestamptz IS NULL OR fired_at <= $2) \
-         GROUP BY day ORDER BY day DESC LIMIT $3 OFFSET $4",
-    )
-    .bind(from_ts)
-    .bind(to_ts)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+    let sql = format!(
+        "SELECT DATE(ae.fired_at AT TIME ZONE 'UTC') AS day, COUNT(*)::BIGINT AS cnt \
+         FROM alert_events ae \
+         WHERE ae.resolved_at IS NULL \
+           AND ($4::timestamptz IS NULL OR ae.fired_at >= $4) \
+           AND ($5::timestamptz IS NULL OR ae.fired_at <= $5) \
+           {filter} \
+         GROUP BY day ORDER BY day DESC LIMIT $6 OFFSET $7",
+        filter = ALERT_DEF_FILTER
+    );
+    let rows: Vec<Row> = sqlx::query_as(&sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(category)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
-    let total: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT DATE(fired_at AT TIME ZONE 'UTC'))::BIGINT \
-         FROM alert_events WHERE resolved_at IS NULL \
-           AND ($1::timestamptz IS NULL OR fired_at >= $1) \
-           AND ($2::timestamptz IS NULL OR fired_at <= $2)",
-    )
-    .bind(from_ts)
-    .bind(to_ts)
-    .fetch_one(pool)
-    .await?;
+    let total_sql = format!(
+        "SELECT COUNT(DISTINCT DATE(ae.fired_at AT TIME ZONE 'UTC'))::BIGINT \
+         FROM alert_events ae WHERE ae.resolved_at IS NULL \
+           AND ($4::timestamptz IS NULL OR ae.fired_at >= $4) \
+           AND ($5::timestamptz IS NULL OR ae.fired_at <= $5) \
+           {filter}",
+        filter = ALERT_DEF_FILTER
+    );
+    let total: (i64,) = sqlx::query_as(&total_sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(category)
+        .bind(from_ts)
+        .bind(to_ts)
+        .fetch_one(pool)
+        .await?;
 
     let out = rows
         .into_iter()
         .map(|r| AnomalyRow {
             day: r.day,
-            site_id: None,
-            department_id: None,
+            site_id,
+            department_id,
             count: r.cnt,
         })
         .collect();
@@ -265,8 +351,12 @@ pub async fn anomalies(
 // K5 — Efficiency
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn efficiency(
     pool: &PgPool,
+    site_id: Option<Uuid>,
+    department_id: Option<Uuid>,
+    category: Option<&str>,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     limit: i64,
@@ -281,38 +371,50 @@ pub async fn efficiency(
     let from_ts = from.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
     let to_ts = to.map(|d| d.and_hms_opt(23, 59, 59).unwrap().and_utc());
 
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT DATE(computed_at AT TIME ZONE 'UTC') AS day, \
-                AVG(result) AS idx \
-         FROM metric_computations \
-         WHERE ($1::timestamptz IS NULL OR computed_at >= $1) \
-           AND ($2::timestamptz IS NULL OR computed_at <= $2) \
-         GROUP BY day ORDER BY day DESC LIMIT $3 OFFSET $4",
-    )
-    .bind(from_ts)
-    .bind(to_ts)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+    let sql = format!(
+        "SELECT DATE(mc.computed_at AT TIME ZONE 'UTC') AS day, \
+                AVG(mc.result) AS idx \
+         FROM metric_computations mc \
+         WHERE ($4::timestamptz IS NULL OR mc.computed_at >= $4) \
+           AND ($5::timestamptz IS NULL OR mc.computed_at <= $5) \
+           {filter} \
+         GROUP BY day ORDER BY day DESC LIMIT $6 OFFSET $7",
+        filter = MC_DEF_FILTER
+    );
+    let rows: Vec<Row> = sqlx::query_as(&sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(category)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
-    let total: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT DATE(computed_at AT TIME ZONE 'UTC'))::BIGINT \
-         FROM metric_computations \
-         WHERE ($1::timestamptz IS NULL OR computed_at >= $1) \
-           AND ($2::timestamptz IS NULL OR computed_at <= $2)",
-    )
-    .bind(from_ts)
-    .bind(to_ts)
-    .fetch_one(pool)
-    .await?;
+    let total_sql = format!(
+        "SELECT COUNT(DISTINCT DATE(mc.computed_at AT TIME ZONE 'UTC'))::BIGINT \
+         FROM metric_computations mc \
+         WHERE ($4::timestamptz IS NULL OR mc.computed_at >= $4) \
+           AND ($5::timestamptz IS NULL OR mc.computed_at <= $5) \
+           {filter}",
+        filter = MC_DEF_FILTER
+    );
+    let total: (i64,) = sqlx::query_as(&total_sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(category)
+        .bind(from_ts)
+        .bind(to_ts)
+        .fetch_one(pool)
+        .await?;
 
     let out = rows
         .into_iter()
         .map(|r| EfficiencyRow {
             day: r.day,
-            site_id: None,
-            department_id: None,
+            site_id,
+            department_id,
             index: r.idx,
         })
         .collect();
@@ -323,15 +425,21 @@ pub async fn efficiency(
 // K6 — Drill
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn drill(
     pool: &PgPool,
     metric_kind: Option<&str>,
+    site_id: Option<Uuid>,
+    department_id: Option<Uuid>,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     limit: i64,
     offset: i64,
 ) -> AppResult<(Vec<DrillRow>, i64)> {
     // Generic drill: aggregate metric_computations by definition name.
+    // Note: `metric_kind` is the native drill axis; `category` here is
+    // folded into `metric_kind` because the two express the same concept
+    // in the DTO contract. The handler forwards whichever is provided.
     #[derive(sqlx::FromRow)]
     struct Row {
         def_name: String,
@@ -342,37 +450,46 @@ pub async fn drill(
     let from_ts = from.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
     let to_ts = to.map(|d| d.and_hms_opt(23, 59, 59).unwrap().and_utc());
 
-    let rows: Vec<Row> = sqlx::query_as(
+    // Reuse MC_DEF_FILTER bind slots $1,$2,$3 for site, dept, category(=metric_kind).
+    let sql = format!(
         "SELECT md.name AS def_name, AVG(mc.result) AS avg_result, md.formula_kind \
          FROM metric_computations mc \
          JOIN metric_definitions md ON md.id = mc.definition_id \
-         WHERE ($1::text IS NULL OR md.formula_kind = $1) \
-           AND ($2::timestamptz IS NULL OR mc.computed_at >= $2) \
-           AND ($3::timestamptz IS NULL OR mc.computed_at <= $3) \
+         WHERE ($4::timestamptz IS NULL OR mc.computed_at >= $4) \
+           AND ($5::timestamptz IS NULL OR mc.computed_at <= $5) \
+           {filter} \
          GROUP BY md.name, md.formula_kind \
-         ORDER BY avg_result DESC LIMIT $4 OFFSET $5",
-    )
-    .bind(metric_kind)
-    .bind(from_ts)
-    .bind(to_ts)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+         ORDER BY avg_result DESC LIMIT $6 OFFSET $7",
+        filter = MC_DEF_FILTER
+    );
+    let rows: Vec<Row> = sqlx::query_as(&sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(metric_kind)
+        .bind(from_ts)
+        .bind(to_ts)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
-    let total: (i64,) = sqlx::query_as(
+    let total_sql = format!(
         "SELECT COUNT(DISTINCT md.name)::BIGINT \
          FROM metric_computations mc \
          JOIN metric_definitions md ON md.id = mc.definition_id \
-         WHERE ($1::text IS NULL OR md.formula_kind = $1) \
-           AND ($2::timestamptz IS NULL OR mc.computed_at >= $2) \
-           AND ($3::timestamptz IS NULL OR mc.computed_at <= $3)",
-    )
-    .bind(metric_kind)
-    .bind(from_ts)
-    .bind(to_ts)
-    .fetch_one(pool)
-    .await?;
+         WHERE ($4::timestamptz IS NULL OR mc.computed_at >= $4) \
+           AND ($5::timestamptz IS NULL OR mc.computed_at <= $5) \
+           {filter}",
+        filter = MC_DEF_FILTER
+    );
+    let total: (i64,) = sqlx::query_as(&total_sql)
+        .bind(site_id)
+        .bind(department_id)
+        .bind(metric_kind)
+        .bind(from_ts)
+        .bind(to_ts)
+        .fetch_one(pool)
+        .await?;
 
     let out = rows
         .into_iter()

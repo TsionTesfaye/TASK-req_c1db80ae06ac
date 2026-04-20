@@ -17,10 +17,7 @@ use crate::{
     errors::AppResult,
     state::AppState,
 };
-use terraops_shared::{
-    dto::kpi::DrillQuery,
-    pagination::{Page, PageQuery},
-};
+use terraops_shared::pagination::{Page, PageQuery};
 
 use super::repo;
 
@@ -46,27 +43,28 @@ async fn summary(user: AuthUser, state: web::Data<AppState>) -> AppResult<impl R
 }
 
 // ===========================================================================
-// K2 — Cycle Time
+// Shared slice query — K2, K4, K5 honor site_id / department_id / category.
 // ===========================================================================
 #[derive(Deserialize)]
-struct CycleQuery {
+struct SliceQuery {
     site_id: Option<Uuid>,
     department_id: Option<Uuid>,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
-    #[allow(dead_code)]
     category: Option<String>,
     page: Option<u32>,
     page_size: Option<u32>,
 }
 
+// ===========================================================================
+// K2 — Cycle Time
+// ===========================================================================
 async fn cycle_time(
     user: AuthUser,
     state: web::Data<AppState>,
-    q: web::Query<CycleQuery>,
+    q: web::Query<SliceQuery>,
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "kpi.read")?;
-    use terraops_shared::pagination::PageQuery;
     let p = PageQuery {
         page: q.page,
         page_size: q.page_size,
@@ -76,6 +74,7 @@ async fn cycle_time(
         &state.pool,
         q.site_id,
         q.department_id,
+        q.category.as_deref(),
         q.from,
         q.to,
         p.limit() as i64,
@@ -104,32 +103,28 @@ async fn funnel(user: AuthUser, state: web::Data<AppState>) -> AppResult<impl Re
 // ===========================================================================
 // K4 — Anomalies
 // ===========================================================================
-#[derive(Deserialize)]
-struct AnomalyQuery {
-    #[allow(dead_code)]
-    site_id: Option<Uuid>,
-    #[allow(dead_code)]
-    department_id: Option<Uuid>,
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
-    page: Option<u32>,
-    page_size: Option<u32>,
-}
-
 async fn anomalies(
     user: AuthUser,
     state: web::Data<AppState>,
-    q: web::Query<AnomalyQuery>,
+    q: web::Query<SliceQuery>,
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "kpi.read")?;
-    use terraops_shared::pagination::PageQuery;
     let p = PageQuery {
         page: q.page,
         page_size: q.page_size,
     }
     .resolved();
-    let (items, total) =
-        repo::anomalies(&state.pool, q.from, q.to, p.limit() as i64, p.offset() as i64).await?;
+    let (items, total) = repo::anomalies(
+        &state.pool,
+        q.site_id,
+        q.department_id,
+        q.category.as_deref(),
+        q.from,
+        q.to,
+        p.limit() as i64,
+        p.offset() as i64,
+    )
+    .await?;
     Ok(HttpResponse::Ok()
         .insert_header(("X-Total-Count", total.to_string()))
         .json(Page {
@@ -143,32 +138,28 @@ async fn anomalies(
 // ===========================================================================
 // K5 — Efficiency
 // ===========================================================================
-#[derive(Deserialize)]
-struct EffQuery {
-    #[allow(dead_code)]
-    site_id: Option<Uuid>,
-    #[allow(dead_code)]
-    department_id: Option<Uuid>,
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
-    page: Option<u32>,
-    page_size: Option<u32>,
-}
-
 async fn efficiency(
     user: AuthUser,
     state: web::Data<AppState>,
-    q: web::Query<EffQuery>,
+    q: web::Query<SliceQuery>,
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "kpi.read")?;
-    use terraops_shared::pagination::PageQuery;
     let p = PageQuery {
         page: q.page,
         page_size: q.page_size,
     }
     .resolved();
-    let (items, total) =
-        repo::efficiency(&state.pool, q.from, q.to, p.limit() as i64, p.offset() as i64).await?;
+    let (items, total) = repo::efficiency(
+        &state.pool,
+        q.site_id,
+        q.department_id,
+        q.category.as_deref(),
+        q.from,
+        q.to,
+        p.limit() as i64,
+        p.offset() as i64,
+    )
+    .await?;
     Ok(HttpResponse::Ok()
         .insert_header(("X-Total-Count", total.to_string()))
         .json(Page {
@@ -185,9 +176,10 @@ async fn efficiency(
 #[derive(Deserialize)]
 struct DrillQ {
     metric_kind: Option<String>,
-    #[allow(dead_code)]
+    /// Alias for `metric_kind` — the generic KPI "category" axis. When both
+    /// are present, `metric_kind` wins.
+    category: Option<String>,
     site_id: Option<Uuid>,
-    #[allow(dead_code)]
     department_id: Option<Uuid>,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
@@ -201,15 +193,17 @@ async fn drill(
     q: web::Query<DrillQ>,
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "kpi.read")?;
-    use terraops_shared::pagination::PageQuery;
     let p = PageQuery {
         page: q.page,
         page_size: q.page_size,
     }
     .resolved();
+    let kind = q.metric_kind.as_deref().or(q.category.as_deref());
     let (items, total) = repo::drill(
         &state.pool,
-        q.metric_kind.as_deref(),
+        kind,
+        q.site_id,
+        q.department_id,
         q.from,
         q.to,
         p.limit() as i64,

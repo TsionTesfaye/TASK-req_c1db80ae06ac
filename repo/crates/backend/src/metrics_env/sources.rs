@@ -225,20 +225,39 @@ pub async fn list_observations(
     Ok((dtos, total.0))
 }
 
-/// Fetch raw window points for a given source for formula computation.
+/// A raw observation inside a formula window, carrying the `env_observations.id`
+/// so lineage can trace every computation point back to the exact source row.
+#[derive(Debug, Clone)]
+pub struct WindowSample {
+    pub observation_id: Uuid,
+    pub observed_at: DateTime<Utc>,
+    pub value: f64,
+}
+
+impl WindowSample {
+    /// Adapter for the formula layer which only cares about `(at, value)`.
+    pub fn as_formula_point(&self) -> (DateTime<Utc>, f64) {
+        (self.observed_at, self.value)
+    }
+}
+
+/// Fetch raw window samples for a given source, including `observation_id`
+/// for lineage persistence. Callers that only need `(at, value)` pairs should
+/// project via `as_formula_point()`.
 pub async fn fetch_window(
     pool: &PgPool,
     source_id: Uuid,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-) -> AppResult<Vec<(DateTime<Utc>, f64)>> {
+) -> AppResult<Vec<WindowSample>> {
     #[derive(sqlx::FromRow)]
     struct Pt {
+        id: Uuid,
         observed_at: DateTime<Utc>,
         value: f64,
     }
     let pts: Vec<Pt> = sqlx::query_as(
-        "SELECT observed_at, value FROM env_observations \
+        "SELECT id, observed_at, value FROM env_observations \
          WHERE source_id = $1 AND observed_at >= $2 AND observed_at <= $3 \
          ORDER BY observed_at ASC",
     )
@@ -247,5 +266,18 @@ pub async fn fetch_window(
     .bind(to)
     .fetch_all(pool)
     .await?;
-    Ok(pts.into_iter().map(|p| (p.observed_at, p.value)).collect())
+    Ok(pts
+        .into_iter()
+        .map(|p| WindowSample {
+            observation_id: p.id,
+            observed_at: p.observed_at,
+            value: p.value,
+        })
+        .collect())
+}
+
+/// Project a slice of `WindowSample`s down to the `(at, value)` tuples the
+/// formula module expects. Small wrapper so handler code stays readable.
+pub fn formula_points(samples: &[WindowSample]) -> Vec<(DateTime<Utc>, f64)> {
+    samples.iter().map(|s| s.as_formula_point()).collect()
 }

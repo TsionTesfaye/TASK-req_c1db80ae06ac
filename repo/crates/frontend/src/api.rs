@@ -317,8 +317,18 @@ impl ApiClient {
     pub async fn get_user(&self, id: Uuid) -> Result<UserDetail, ApiError> {
         self.get_with_retry::<UserDetail>(&format!("/users/{id}")).await
     }
-    pub async fn create_user(&self, req: &CreateUserRequest) -> Result<UserDetail, ApiError> {
-        self.mutate(Method::POST, "/users", Some(req)).await
+    /// POST /api/v1/users. Backend (`handlers/users.rs::create_user`)
+    /// returns `201 Created` with body `{ "id": <uuid> }`, not a full
+    /// `UserDetail`. This method honors the real contract; the UI then
+    /// either refreshes the user list or, when needed, calls
+    /// `get_user(id)` to render the detail.
+    pub async fn create_user(&self, req: &CreateUserRequest) -> Result<Uuid, ApiError> {
+        #[derive(serde::Deserialize)]
+        struct IdEnvelope {
+            id: Uuid,
+        }
+        let env: IdEnvelope = self.mutate(Method::POST, "/users", Some(req)).await?;
+        Ok(env.id)
     }
     pub async fn update_user(&self, id: Uuid, req: &UpdateUserRequest) -> Result<(), ApiError> {
         self.mutate_no_body(Method::PATCH, &format!("/users/{id}"), Some(req))
