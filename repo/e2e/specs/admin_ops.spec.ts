@@ -5,12 +5,14 @@
 
 import { test, expect } from "@playwright/test";
 
-const ADMIN_EMAIL = "admin@terraops.local";
+// TerraOps login is username-based (not email). The seeded admin username
+// is "admin" (password TerraOps!2026).
+const ADMIN_USER = "admin";
 const ADMIN_PW = "TerraOps!2026";
 
 async function login(page: any) {
     await page.goto("/login");
-    await page.fill("input[name=username], input[type=email]", ADMIN_EMAIL);
+    await page.fill("input[name=username], input[type=email]", ADMIN_USER);
     await page.fill("input[type=password]", ADMIN_PW);
     await page.click("button[type=submit]");
     await expect(page).toHaveURL(/\/dashboard|\/$/, { timeout: 10_000 });

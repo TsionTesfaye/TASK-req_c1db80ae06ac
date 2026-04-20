@@ -4,16 +4,19 @@
 // error surface, accepts valid demo credentials, and lands on the
 // dashboard. Uses the canonical demo administrator seeded by
 // `terraops-backend seed`.
+//
+// Note: TerraOps login is username-based (not email). The seeded admin
+// username is "admin" (password TerraOps!2026).
 
 import { test, expect } from "@playwright/test";
 
-const ADMIN_EMAIL = "admin@terraops.local";
+const ADMIN_USER = "admin";
 const ADMIN_PW = "TerraOps!2026";
 
 test("admin can log in and lands on dashboard", async ({ page }) => {
     await page.goto("/login");
-    await expect(page.locator("input[type=email], input[name=username]")).toBeVisible();
-    await page.fill("input[name=username], input[type=email]", ADMIN_EMAIL);
+    await expect(page.locator("input[name=username], input[type=email]")).toBeVisible();
+    await page.fill("input[name=username], input[type=email]", ADMIN_USER);
     await page.fill("input[type=password]", ADMIN_PW);
     await page.click("button[type=submit], button:has-text('Sign in'), button:has-text('Log in')");
 
@@ -23,7 +26,7 @@ test("admin can log in and lands on dashboard", async ({ page }) => {
 
 test("login rejects wrong password", async ({ page }) => {
     await page.goto("/login");
-    await page.fill("input[name=username], input[type=email]", ADMIN_EMAIL);
+    await page.fill("input[name=username], input[type=email]", ADMIN_USER);
     await page.fill("input[type=password]", "wrong-pw");
     await page.click("button[type=submit], button:has-text('Sign in'), button:has-text('Log in')");
     // Still on login URL; no silent redirect to dashboard.
