@@ -23,7 +23,8 @@ use terraops_shared::dto::{
     auth::{AuthUserDto, ChangePasswordRequest, LoginRequest, LoginResponse, RefreshResponse},
     env_source::{BulkObservationsRequest, BulkObservationsResponse, CreateEnvSourceRequest,
         EnvSourceDto, ObservationDto, UpdateEnvSourceRequest},
-    import::{ImportBatchSummary, ImportRowDto},
+    import::{ImportBatchSummary, ImportCancelResult, ImportCommitResult, ImportRowDto,
+        ImportValidateResult},
     kpi::{AnomalyRow, CycleTimeRow, DrillRow, EfficiencyRow, FunnelResponse, KpiSummary},
     metric::{ComputationLineage, CreateMetricDefinitionRequest, MetricDefinitionDto,
         MetricSeriesResponse, UpdateMetricDefinitionRequest},
@@ -44,6 +45,7 @@ use terraops_shared::dto::{
         UserListItem},
 };
 use terraops_shared::error::{ErrorCode, ErrorEnvelope};
+use terraops_shared::pagination::Page;
 use uuid::Uuid;
 
 /// Request timeout per design §Budget rules.
@@ -299,9 +301,18 @@ impl ApiClient {
     }
 
     // ---- Users (U1–U10) ----------------------------------------------------
+    //
+    // The backend wraps paginated list endpoints (`/users`, `/audit`,
+    // `/monitoring/crashes`) in the shared `Page<T>` envelope
+    // (`items/page/page_size/total`). This client exposes both the raw
+    // page and a thin `*_items` convenience accessor that unwraps the
+    // `items` vector for callers that don't render pagination controls.
 
+    pub async fn list_users_page(&self) -> Result<Page<UserListItem>, ApiError> {
+        self.get_with_retry::<Page<UserListItem>>("/users").await
+    }
     pub async fn list_users(&self) -> Result<Vec<UserListItem>, ApiError> {
-        self.get_with_retry::<Vec<UserListItem>>("/users").await
+        Ok(self.list_users_page().await?.items)
     }
     pub async fn get_user(&self, id: Uuid) -> Result<UserDetail, ApiError> {
         self.get_with_retry::<UserDetail>(&format!("/users/{id}")).await
@@ -320,7 +331,9 @@ impl ApiClient {
         self.mutate_no_body::<()>(Method::POST, &format!("/users/{id}/unlock"), None).await
     }
     pub async fn assign_roles(&self, id: Uuid, req: &AssignRolesRequest) -> Result<(), ApiError> {
-        self.mutate_no_body(Method::PUT, &format!("/users/{id}/roles"), Some(req))
+        // Backend route is POST /users/{id}/roles (U7) — see
+        // crates/backend/src/handlers/users.rs:48 and http_p1.rs t_u7.
+        self.mutate_no_body(Method::POST, &format!("/users/{id}/roles"), Some(req))
             .await
     }
     pub async fn reset_password(&self, id: Uuid, new_password: &str) -> Result<(), ApiError> {
@@ -331,8 +344,11 @@ impl ApiClient {
     pub async fn list_roles(&self) -> Result<Vec<RoleDto>, ApiError> {
         self.get_with_retry::<Vec<RoleDto>>("/roles").await
     }
+    pub async fn list_audit_page(&self) -> Result<Page<AuditEntry>, ApiError> {
+        self.get_with_retry::<Page<AuditEntry>>("/audit").await
+    }
     pub async fn list_audit(&self) -> Result<Vec<AuditEntry>, ApiError> {
-        self.get_with_retry::<Vec<AuditEntry>>("/audit").await
+        Ok(self.list_audit_page().await?.items)
     }
 
     // ---- Security (SEC1–SEC9) ----------------------------------------------
@@ -393,11 +409,17 @@ impl ApiClient {
     pub async fn list_errors(&self) -> Result<Vec<ErrorBucket>, ApiError> {
         self.get_with_retry::<Vec<ErrorBucket>>("/monitoring/errors").await
     }
+    // Backend path shapes (see crates/backend/src/handlers/monitoring.rs:24-30):
+    //   GET  /monitoring/crash-reports  — paginated list (Page<CrashReport>)
+    //   POST /monitoring/crash-report   — authenticated client crash ingest
+    pub async fn list_crashes_page(&self) -> Result<Page<CrashReport>, ApiError> {
+        self.get_with_retry::<Page<CrashReport>>("/monitoring/crash-reports").await
+    }
     pub async fn list_crashes(&self) -> Result<Vec<CrashReport>, ApiError> {
-        self.get_with_retry::<Vec<CrashReport>>("/monitoring/crashes").await
+        Ok(self.list_crashes_page().await?.items)
     }
     pub async fn ingest_crash(&self, req: &IngestCrashReport) -> Result<(), ApiError> {
-        self.mutate_no_body(Method::POST, "/monitoring/crashes", Some(req)).await
+        self.mutate_no_body(Method::POST, "/monitoring/crash-report", Some(req)).await
     }
 
     // ---- Reference data (REF1–REF9) ---------------------------------------
@@ -423,8 +445,11 @@ impl ApiClient {
 
     // ---- Notifications (N1–N7) --------------------------------------------
 
+    pub async fn list_notifications_page(&self) -> Result<Page<NotificationItem>, ApiError> {
+        self.get_with_retry::<Page<NotificationItem>>("/notifications").await
+    }
     pub async fn list_notifications(&self) -> Result<Vec<NotificationItem>, ApiError> {
-        self.get_with_retry::<Vec<NotificationItem>>("/notifications").await
+        Ok(self.list_notifications_page().await?.items)
     }
     pub async fn mark_notification_read(&self, id: Uuid) -> Result<(), ApiError> {
         self.mutate_no_body::<()>(Method::POST, &format!("/notifications/{id}/read"), None)
@@ -457,26 +482,69 @@ impl ApiClient {
 
     // ---- P-A Catalog: Products (P1–P14) -------------------------------------
 
+    pub async fn list_products_page(&self) -> Result<Page<ProductListItem>, ApiError> {
+        self.list_products_page_query("").await
+    }
+    /// Paginated product listing with raw querystring (e.g. `q=foo&page=2`).
+    pub async fn list_products_page_query(
+        &self,
+        query: &str,
+    ) -> Result<Page<ProductListItem>, ApiError> {
+        let path = if query.is_empty() {
+            "/products".to_string()
+        } else {
+            format!("/products?{query}")
+        };
+        self.get_with_retry::<Page<ProductListItem>>(&path).await
+    }
     pub async fn list_products(&self) -> Result<Vec<ProductListItem>, ApiError> {
-        self.get_with_retry("/products").await
+        Ok(self.list_products_page().await?.items)
     }
     pub async fn get_product(&self, id: Uuid) -> Result<ProductDetail, ApiError> {
         self.get_with_retry(&format!("/products/{id}")).await
     }
-    pub async fn create_product(&self, req: &CreateProductRequest) -> Result<ProductDetail, ApiError> {
-        self.mutate(Method::POST, "/products", Some(req)).await
+    /// Backend returns `{ "id": <uuid> }` (HTTP 201). The caller can re-fetch
+    /// the full `ProductDetail` via `get_product(id)` after creation.
+    pub async fn create_product(
+        &self,
+        req: &CreateProductRequest,
+    ) -> Result<Uuid, ApiError> {
+        #[derive(serde::Deserialize)]
+        struct Wrap { id: Uuid }
+        let w: Wrap = self.mutate(Method::POST, "/products", Some(req)).await?;
+        Ok(w.id)
     }
-    pub async fn update_product(&self, id: Uuid, req: &UpdateProductRequest) -> Result<ProductDetail, ApiError> {
-        self.mutate(Method::PATCH, &format!("/products/{id}"), Some(req)).await
+    /// Backend returns 204 No Content on success.
+    pub async fn update_product(
+        &self,
+        id: Uuid,
+        req: &UpdateProductRequest,
+    ) -> Result<(), ApiError> {
+        self.mutate_no_body(Method::PATCH, &format!("/products/{id}"), Some(req)).await
     }
     pub async fn delete_product(&self, id: Uuid) -> Result<(), ApiError> {
         self.mutate_no_body::<()>(Method::DELETE, &format!("/products/{id}"), None).await
     }
-    pub async fn set_product_status(&self, id: Uuid, req: &SetOnShelfRequest) -> Result<ProductDetail, ApiError> {
-        self.mutate(Method::POST, &format!("/products/{id}/status"), Some(req)).await
+    /// Backend returns 204 No Content on success.
+    pub async fn set_product_status(
+        &self,
+        id: Uuid,
+        req: &SetOnShelfRequest,
+    ) -> Result<(), ApiError> {
+        self.mutate_no_body(Method::POST, &format!("/products/{id}/status"), Some(req)).await
     }
-    pub async fn product_history(&self, id: Uuid) -> Result<Vec<ProductHistoryEntry>, ApiError> {
-        self.get_with_retry(&format!("/products/{id}/history")).await
+    pub async fn product_history_page(
+        &self,
+        id: Uuid,
+    ) -> Result<Page<ProductHistoryEntry>, ApiError> {
+        self.get_with_retry::<Page<ProductHistoryEntry>>(&format!("/products/{id}/history"))
+            .await
+    }
+    pub async fn product_history(
+        &self,
+        id: Uuid,
+    ) -> Result<Vec<ProductHistoryEntry>, ApiError> {
+        Ok(self.product_history_page(id).await?.items)
     }
     pub async fn add_tax_rate(&self, id: Uuid, req: &CreateTaxRateRequest) -> Result<serde_json::Value, ApiError> {
         self.mutate(Method::POST, &format!("/products/{id}/tax-rates"), Some(req)).await
@@ -496,29 +564,44 @@ impl ApiClient {
 
     // ---- P-A Imports (I1–I7) ------------------------------------------------
 
+    pub async fn list_imports_page(&self) -> Result<Page<ImportBatchSummary>, ApiError> {
+        self.get_with_retry::<Page<ImportBatchSummary>>("/imports").await
+    }
     pub async fn list_imports(&self) -> Result<Vec<ImportBatchSummary>, ApiError> {
-        self.get_with_retry("/imports").await
+        Ok(self.list_imports_page().await?.items)
     }
     pub async fn get_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
         self.get_with_retry(&format!("/imports/{id}")).await
     }
-    pub async fn list_import_rows(&self, id: Uuid) -> Result<Vec<ImportRowDto>, ApiError> {
-        self.get_with_retry(&format!("/imports/{id}/rows")).await
+    pub async fn list_import_rows_page(
+        &self,
+        id: Uuid,
+    ) -> Result<Page<ImportRowDto>, ApiError> {
+        self.get_with_retry::<Page<ImportRowDto>>(&format!("/imports/{id}/rows")).await
     }
-    pub async fn validate_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+    pub async fn list_import_rows(&self, id: Uuid) -> Result<Vec<ImportRowDto>, ApiError> {
+        Ok(self.list_import_rows_page(id).await?.items)
+    }
+    /// Backend returns `{id, error_count, status}`.
+    pub async fn validate_import(&self, id: Uuid) -> Result<ImportValidateResult, ApiError> {
         self.mutate::<(), _>(Method::POST, &format!("/imports/{id}/validate"), None).await
     }
-    pub async fn commit_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+    /// Backend returns `{id, inserted, status}`.
+    pub async fn commit_import(&self, id: Uuid) -> Result<ImportCommitResult, ApiError> {
         self.mutate::<(), _>(Method::POST, &format!("/imports/{id}/commit"), None).await
     }
-    pub async fn cancel_import(&self, id: Uuid) -> Result<ImportBatchSummary, ApiError> {
+    /// Backend returns `{id, status}`.
+    pub async fn cancel_import(&self, id: Uuid) -> Result<ImportCancelResult, ApiError> {
         self.mutate::<(), _>(Method::POST, &format!("/imports/{id}/cancel"), None).await
     }
 
     // ---- P-B Env sources + observations (E1–E6) -----------------------------
 
+    pub async fn list_env_sources_page(&self) -> Result<Page<EnvSourceDto>, ApiError> {
+        self.get_with_retry::<Page<EnvSourceDto>>("/env/sources").await
+    }
     pub async fn list_env_sources(&self) -> Result<Vec<EnvSourceDto>, ApiError> {
-        self.get_with_retry("/env/sources").await
+        Ok(self.list_env_sources_page().await?.items)
     }
     pub async fn create_env_source(&self, req: &CreateEnvSourceRequest) -> Result<EnvSourceDto, ApiError> {
         self.mutate(Method::POST, "/env/sources", Some(req)).await
@@ -532,16 +615,27 @@ impl ApiClient {
     pub async fn bulk_observations(&self, id: Uuid, req: &BulkObservationsRequest) -> Result<BulkObservationsResponse, ApiError> {
         self.mutate(Method::POST, &format!("/env/sources/{id}/observations"), Some(req)).await
     }
-    pub async fn list_observations(&self, query: &str) -> Result<Vec<ObservationDto>, ApiError> {
+    pub async fn list_observations_page(
+        &self,
+        query: &str,
+    ) -> Result<Page<ObservationDto>, ApiError> {
         let path = if query.is_empty() { "/env/observations".to_string() }
                    else { format!("/env/observations?{query}") };
-        self.get_with_retry(&path).await
+        self.get_with_retry::<Page<ObservationDto>>(&path).await
+    }
+    pub async fn list_observations(&self, query: &str) -> Result<Vec<ObservationDto>, ApiError> {
+        Ok(self.list_observations_page(query).await?.items)
     }
 
     // ---- P-B Metric definitions + series + lineage (MD1–MD7) ----------------
 
+    pub async fn list_metric_definitions_page(
+        &self,
+    ) -> Result<Page<MetricDefinitionDto>, ApiError> {
+        self.get_with_retry::<Page<MetricDefinitionDto>>("/metrics/definitions").await
+    }
     pub async fn list_metric_definitions(&self) -> Result<Vec<MetricDefinitionDto>, ApiError> {
-        self.get_with_retry("/metrics/definitions").await
+        Ok(self.list_metric_definitions_page().await?.items)
     }
     pub async fn get_metric_definition(&self, id: Uuid) -> Result<MetricDefinitionDto, ApiError> {
         self.get_with_retry(&format!("/metrics/definitions/{id}")).await
@@ -567,26 +661,61 @@ impl ApiClient {
     pub async fn kpi_summary(&self) -> Result<KpiSummary, ApiError> {
         self.get_with_retry("/kpi/summary").await
     }
+    pub async fn kpi_cycle_time_page(
+        &self,
+        query: &str,
+    ) -> Result<Page<CycleTimeRow>, ApiError> {
+        let path = if query.is_empty() { "/kpi/cycle-time".to_string() }
+                   else { format!("/kpi/cycle-time?{query}") };
+        self.get_with_retry::<Page<CycleTimeRow>>(&path).await
+    }
     pub async fn kpi_cycle_time(&self) -> Result<Vec<CycleTimeRow>, ApiError> {
-        self.get_with_retry("/kpi/cycle-time").await
+        Ok(self.kpi_cycle_time_page("").await?.items)
     }
     pub async fn kpi_funnel(&self) -> Result<FunnelResponse, ApiError> {
         self.get_with_retry("/kpi/funnel").await
     }
+    pub async fn kpi_anomalies_page(
+        &self,
+        query: &str,
+    ) -> Result<Page<AnomalyRow>, ApiError> {
+        let path = if query.is_empty() { "/kpi/anomalies".to_string() }
+                   else { format!("/kpi/anomalies?{query}") };
+        self.get_with_retry::<Page<AnomalyRow>>(&path).await
+    }
     pub async fn kpi_anomalies(&self) -> Result<Vec<AnomalyRow>, ApiError> {
-        self.get_with_retry("/kpi/anomalies").await
+        Ok(self.kpi_anomalies_page("").await?.items)
+    }
+    pub async fn kpi_efficiency_page(
+        &self,
+        query: &str,
+    ) -> Result<Page<EfficiencyRow>, ApiError> {
+        let path = if query.is_empty() { "/kpi/efficiency".to_string() }
+                   else { format!("/kpi/efficiency?{query}") };
+        self.get_with_retry::<Page<EfficiencyRow>>(&path).await
     }
     pub async fn kpi_efficiency(&self) -> Result<Vec<EfficiencyRow>, ApiError> {
-        self.get_with_retry("/kpi/efficiency").await
+        Ok(self.kpi_efficiency_page("").await?.items)
+    }
+    pub async fn kpi_drill_page(
+        &self,
+        query: &str,
+    ) -> Result<Page<DrillRow>, ApiError> {
+        let path = if query.is_empty() { "/kpi/drill".to_string() }
+                   else { format!("/kpi/drill?{query}") };
+        self.get_with_retry::<Page<DrillRow>>(&path).await
     }
     pub async fn kpi_drill(&self) -> Result<Vec<DrillRow>, ApiError> {
-        self.get_with_retry("/kpi/drill").await
+        Ok(self.kpi_drill_page("").await?.items)
     }
 
     // ---- P-B Alerts (AL1–AL6) -----------------------------------------------
 
+    pub async fn list_alert_rules_page(&self) -> Result<Page<AlertRuleDto>, ApiError> {
+        self.get_with_retry::<Page<AlertRuleDto>>("/alerts/rules").await
+    }
     pub async fn list_alert_rules(&self) -> Result<Vec<AlertRuleDto>, ApiError> {
-        self.get_with_retry("/alerts/rules").await
+        Ok(self.list_alert_rules_page().await?.items)
     }
     pub async fn create_alert_rule(&self, req: &CreateAlertRuleRequest) -> Result<AlertRuleDto, ApiError> {
         self.mutate(Method::POST, "/alerts/rules", Some(req)).await
@@ -597,8 +726,11 @@ impl ApiClient {
     pub async fn delete_alert_rule(&self, id: Uuid) -> Result<(), ApiError> {
         self.mutate_no_body::<()>(Method::DELETE, &format!("/alerts/rules/{id}"), None).await
     }
+    pub async fn list_alert_events_page(&self) -> Result<Page<AlertEventDto>, ApiError> {
+        self.get_with_retry::<Page<AlertEventDto>>("/alerts/events").await
+    }
     pub async fn list_alert_events(&self) -> Result<Vec<AlertEventDto>, ApiError> {
-        self.get_with_retry("/alerts/events").await
+        Ok(self.list_alert_events_page().await?.items)
     }
     pub async fn ack_alert_event(&self, id: Uuid) -> Result<AckAlertEventResponse, ApiError> {
         self.mutate::<(), _>(Method::POST, &format!("/alerts/events/{id}/ack"), None).await
@@ -606,8 +738,11 @@ impl ApiClient {
 
     // ---- P-B Reports (RP1–RP6) ----------------------------------------------
 
+    pub async fn list_report_jobs_page(&self) -> Result<Page<ReportJobDto>, ApiError> {
+        self.get_with_retry::<Page<ReportJobDto>>("/reports/jobs").await
+    }
     pub async fn list_report_jobs(&self) -> Result<Vec<ReportJobDto>, ApiError> {
-        self.get_with_retry("/reports/jobs").await
+        Ok(self.list_report_jobs_page().await?.items)
     }
     pub async fn get_report_job(&self, id: Uuid) -> Result<ReportJobDto, ApiError> {
         self.get_with_retry(&format!("/reports/jobs/{id}")).await

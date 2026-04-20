@@ -83,35 +83,38 @@ pub fn nav() -> Html {
                 <NavItem to={Route::Notifications} label="Notifications" badge={unread} />
                 <NavItem to={Route::ChangePassword} label="Change Password" />
 
-                if has("product.read") || has("product.manage") {
+                if has("product.read") || has("product.write") {
                     <div class="tx-nav-section">{ "Catalog" }</div>
                     <NavItem to={Route::Products} label="Products" />
-                    if has("product.manage") {
+                    if has("product.import") {
                         <NavItem to={Route::Imports} label="Import batches" />
                     }
                 }
 
-                if has("env.read") || has("metric.read") || has("kpi.read")
-                   || has("alert.read") || has("alert.manage") || has("report.manage")
+                // Environmental section — gated by the real backend
+                // permission vocabulary (`metric.read` covers /env/sources +
+                // /env/observations + /metrics/*, `alert.ack` covers the
+                // events feed, `report.schedule`/`report.run` cover reports).
+                if has("metric.read") || has("kpi.read")
+                   || has("alert.ack") || has("alert.manage")
+                   || has("report.schedule") || has("report.run")
                 {
                     <div class="tx-nav-section">{ "Environmental" }</div>
                     if has("kpi.read") {
                         <NavItem to={Route::Kpi} label="KPIs" />
                     }
-                    if has("env.read") {
+                    if has("metric.read") {
                         <NavItem to={Route::EnvSources} label="Sources" />
                         <NavItem to={Route::EnvObservations} label="Observations" />
-                    }
-                    if has("metric.read") {
                         <NavItem to={Route::MetricDefinitions} label="Metric definitions" />
                     }
                     if has("alert.manage") {
                         <NavItem to={Route::AlertRules} label="Alert rules" />
                     }
-                    if has("alert.read") {
+                    if has("alert.ack") || has("kpi.read") {
                         <NavItem to={Route::AlertEvents} label="Alerts feed" />
                     }
-                    if has("report.manage") {
+                    if has("report.schedule") || has("report.run") {
                         <NavItem to={Route::Reports} label="Report jobs" />
                     }
                 }

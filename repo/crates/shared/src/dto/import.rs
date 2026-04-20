@@ -27,3 +27,26 @@ pub struct ImportRowDto {
     pub errors: serde_json::Value,
     pub valid: bool,
 }
+
+/// Response returned by `POST /imports/{id}/validate` (I5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportValidateResult {
+    pub id: Uuid,
+    pub error_count: i32,
+    pub status: String,
+}
+
+/// Response returned by `POST /imports/{id}/commit` (I6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportCommitResult {
+    pub id: Uuid,
+    pub inserted: i32,
+    pub status: String,
+}
+
+/// Response returned by `POST /imports/{id}/cancel` (I7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportCancelResult {
+    pub id: Uuid,
+    pub status: String,
+}

@@ -388,7 +388,7 @@ pub mod dashboard {
                                     { "Open catalog" }
                                 </Link<Route>>
                             }
-                            if state.has_permission("env.read") || state.has_permission("metric.read") {
+                            if state.has_permission("metric.read") {
                                 <Link<Route> to={Route::MetricDefinitions} classes={classes!("tx-btn", "tx-btn--ghost")}>
                                     { "Metric definitions" }
                                 </Link<Route>>
@@ -1537,7 +1537,7 @@ pub mod data_steward {
         let can_create = auth
             .state
             .as_ref()
-            .map(|s| s.has_permission("product.manage"))
+            .map(|s| s.has_permission("product.write"))
             .unwrap_or(false);
 
         let on_create = {
@@ -1586,8 +1586,8 @@ pub mod data_steward {
                 let shelf_life_days = shelf_life_days.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.create_product(&req).await {
-                        Ok(p) => {
-                            toast.success(&format!("Created product {}", p.sku));
+                        Ok(new_id) => {
+                            toast.success(&format!("Created product {new_id}"));
                             sku.set(String::new());
                             name.set(String::new());
                             spu.set(String::new());
@@ -1719,7 +1719,7 @@ pub mod data_steward {
         let can_manage = auth
             .state
             .as_ref()
-            .map(|s| s.has_permission("product.manage"))
+            .map(|s| s.has_permission("product.write"))
             .unwrap_or(false);
 
         let toggle_shelf = {
@@ -1794,7 +1794,7 @@ pub mod data_steward {
     pub fn imports_list() -> Html {
         html! {
             <Layout title="Import batches" subtitle="Upload → validate → commit CSV product batches.">
-                <PermGate permission="product.manage">
+                <PermGate permission="product.import">
                     <ImportsBody/>
                 </PermGate>
             </Layout>
@@ -1863,7 +1863,7 @@ pub mod data_steward {
         let id = props.id;
         html! {
             <Layout title="Import batch" subtitle="Row-by-row validation results + commit controls.">
-                <PermGate permission="product.manage">
+                <PermGate permission="product.import">
                     <ImportDetailBody {id} />
                 </PermGate>
             </Layout>
@@ -1991,7 +1991,7 @@ pub mod analyst {
     pub fn sources() -> Html {
         html! {
             <Layout title="Environmental sources" subtitle="Sensors, meters, and manual kiosks.">
-                <PermGate permission="env.read">
+                <PermGate permission="metric.read">
                     <SourcesBody/>
                 </PermGate>
             </Layout>
@@ -2026,7 +2026,7 @@ pub mod analyst {
         let can_manage = auth
             .state
             .as_ref()
-            .map(|s| s.has_permission("env.manage"))
+            .map(|s| s.has_permission("metric.configure"))
             .unwrap_or(false);
 
         let on_name = {
@@ -2113,7 +2113,7 @@ pub mod analyst {
     pub fn observations() -> Html {
         html! {
             <Layout title="Observations" subtitle="Latest raw readings across all env sources.">
-                <PermGate permission="env.read">
+                <PermGate permission="metric.read">
                     <ObservationsBody/>
                 </PermGate>
             </Layout>
@@ -2494,7 +2494,7 @@ pub mod analyst {
     pub fn reports() -> Html {
         html! {
             <Layout title="Report jobs" subtitle="Scheduled KPI + env exports.">
-                <PermGate permission="report.manage">
+                <PermGate permission="report.schedule">
                     <ReportsBody/>
                 </PermGate>
             </Layout>
@@ -2585,7 +2585,7 @@ pub mod user {
     pub fn alerts_feed() -> Html {
         html! {
             <Layout title="Alert events" subtitle="Fired events — ack to acknowledge.">
-                <PermGate permission="alert.read">
+                <PermGate permission="alert.ack">
                     <AlertsFeedBody/>
                 </PermGate>
             </Layout>
