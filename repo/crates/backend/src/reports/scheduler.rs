@@ -128,27 +128,73 @@ pub async fn run_due_jobs(pool: &PgPool, runtime_dir: &PathBuf) -> AppResult<()>
     Ok(())
 }
 
-/// Build report data rows from the database.
-async fn build_report_data(
+/// Build report data rows from the database, honoring the persisted
+/// `params` JSONB on the report job.
+///
+/// Recognised params (all optional):
+///   * `since` / `until` — RFC 3339 timestamps; filter rows by their
+///     natural time column (`computed_at`, `observed_at`, `fired_at`).
+///   * `limit` — row cap (1..=1000, default 50).
+///   * `source_id` — only for `env_series`.
+///   * `definition_id` — only for `kpi_summary`.
+///   * `severity` — only for `alert_digest` (one of `info|warning|critical`).
+///
+/// Audit #5 Issue #2: the scheduler previously ignored `params` entirely
+/// and always returned the latest 50 rows. Filtered exports are a
+/// prompt-required analyst workflow, so the scheduler must translate the
+/// persisted filter block into real SQL predicates.
+pub(crate) async fn build_report_data(
     pool: &PgPool,
     kind: &str,
-    _params: &serde_json::Value,
+    params: &serde_json::Value,
 ) -> Vec<serde_json::Value> {
+    let p = params.as_object();
+    let parse_ts = |k: &str| -> Option<chrono::DateTime<Utc>> {
+        p.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+    };
+    let parse_uuid = |k: &str| -> Option<Uuid> {
+        p.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+    };
+    let parse_str = |k: &str| -> Option<String> {
+        p.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    let since = parse_ts("since");
+    let until = parse_ts("until");
+    let limit: i64 = p
+        .and_then(|o| o.get("limit"))
+        .and_then(|v| v.as_i64())
+        .map(|n| n.clamp(1, 1000))
+        .unwrap_or(50);
+
     match kind {
         "kpi_summary" => {
-            // Return latest metric computations as the report body
             #[derive(sqlx::FromRow)]
             struct Row {
                 formula_kind: String,
                 result: f64,
                 computed_at: chrono::DateTime<Utc>,
             }
+            let definition_id = parse_uuid("definition_id");
             let rows: Vec<Row> = sqlx::query_as(
                 "SELECT md.formula_kind, mc.result, mc.computed_at \
                  FROM metric_computations mc \
                  JOIN metric_definitions md ON md.id = mc.definition_id \
-                 ORDER BY mc.computed_at DESC LIMIT 50",
+                 WHERE ($1::TIMESTAMPTZ IS NULL OR mc.computed_at >= $1) \
+                   AND ($2::TIMESTAMPTZ IS NULL OR mc.computed_at <= $2) \
+                   AND ($3::UUID         IS NULL OR mc.definition_id = $3) \
+                 ORDER BY mc.computed_at DESC LIMIT $4",
             )
+            .bind(since)
+            .bind(until)
+            .bind(definition_id)
+            .bind(limit)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
@@ -170,12 +216,20 @@ async fn build_report_data(
                 observed_at: chrono::DateTime<Utc>,
                 unit: String,
             }
+            let source_id = parse_uuid("source_id");
             let rows: Vec<Row> = sqlx::query_as(
                 "SELECT es.name AS source_name, eo.value, eo.observed_at, eo.unit \
                  FROM env_observations eo \
                  JOIN env_sources es ON es.id = eo.source_id \
-                 ORDER BY eo.observed_at DESC LIMIT 50",
+                 WHERE ($1::TIMESTAMPTZ IS NULL OR eo.observed_at >= $1) \
+                   AND ($2::TIMESTAMPTZ IS NULL OR eo.observed_at <= $2) \
+                   AND ($3::UUID         IS NULL OR eo.source_id = $3) \
+                 ORDER BY eo.observed_at DESC LIMIT $4",
             )
+            .bind(since)
+            .bind(until)
+            .bind(source_id)
+            .bind(limit)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
@@ -198,12 +252,22 @@ async fn build_report_data(
                 fired_at: chrono::DateTime<Utc>,
                 resolved_at: Option<chrono::DateTime<Utc>>,
             }
+            let severity = parse_str("severity").filter(|s| {
+                ["info", "warning", "critical"].contains(&s.as_str())
+            });
             let rows: Vec<Row> = sqlx::query_as(
                 "SELECT ar.severity, ae.value, ae.fired_at, ae.resolved_at \
                  FROM alert_events ae \
                  JOIN alert_rules ar ON ar.id = ae.rule_id \
-                 ORDER BY ae.fired_at DESC LIMIT 50",
+                 WHERE ($1::TIMESTAMPTZ IS NULL OR ae.fired_at >= $1) \
+                   AND ($2::TIMESTAMPTZ IS NULL OR ae.fired_at <= $2) \
+                   AND ($3::TEXT         IS NULL OR ar.severity = $3) \
+                 ORDER BY ae.fired_at DESC LIMIT $4",
             )
+            .bind(since)
+            .bind(until)
+            .bind(severity)
+            .bind(limit)
             .fetch_all(pool)
             .await
             .unwrap_or_default();

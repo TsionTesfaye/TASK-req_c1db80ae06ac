@@ -87,6 +87,8 @@ pub enum Route {
     TalentWeights,
     #[at("/talent/watchlists")]
     TalentWatchlists,
+    #[at("/talent/watchlists/:id")]
+    TalentWatchlistDetail { id: Uuid },
 
     #[not_found]
     #[at("/404")]
@@ -142,6 +144,9 @@ pub fn switch(route: Route) -> Html {
         Route::TalentRecommendations => html! { <pages::recruiter::Recommendations/> },
         Route::TalentWeights => html! { <pages::recruiter::Weights/> },
         Route::TalentWatchlists => html! { <pages::recruiter::Watchlists/> },
+        Route::TalentWatchlistDetail { id } => {
+            html! { <pages::recruiter::WatchlistDetail {id} /> }
+        }
 
         Route::NotFound => html! { <pages::NotFound/> },
     }

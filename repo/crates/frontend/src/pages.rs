@@ -2239,7 +2239,9 @@ pub mod analyst {
     use super::*;
     use terraops_shared::dto::alert::{AlertRuleDto, CreateAlertRuleRequest};
     use terraops_shared::dto::env_source::{CreateEnvSourceRequest, EnvSourceDto, ObservationDto};
-    use terraops_shared::dto::metric::{MetricDefinitionDto, MetricSeriesResponse};
+    use terraops_shared::dto::metric::{
+        CreateMetricDefinitionRequest, MetricDefinitionDto, MetricSeriesResponse,
+    };
     use terraops_shared::dto::report::ReportJobDto;
 
     #[function_component(Sources)]
@@ -2450,7 +2452,19 @@ pub mod analyst {
         };
         { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
 
-        match &*list {
+        // Audit #5 Issue #4: analyst-facing metric-fusion configuration
+        // UI. Gated on `metric.configure` — analysts without configure
+        // permission see only the read-only list below.
+        let create_card = html! {
+            <PermGate permission="metric.configure">
+                <CreateDefinitionCard on_created={{
+                    let r = reload.clone();
+                    Callback::from(move |_| r.emit(()))
+                }}/>
+            </PermGate>
+        };
+
+        let table = match &*list {
             LoadState::Loading => html! { <PlaceholderLoading/> },
             LoadState::Failed(m) => html! {
                 <PlaceholderError message={AttrValue::from(m.clone())}
@@ -2477,6 +2491,334 @@ pub mod analyst {
                 }).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No metric definitions."/> }
             }
+        };
+
+        html! { <>{ create_card }{ table }</> }
+    }
+
+    // ------------------------------------------------------------------
+    // Audit #5 Issue #4: analyst metric-fusion configuration form.
+    // Captures formula kind, time window, source ids, and — for the
+    // comfort_index fusion formula — the alignment rules and
+    // confidence-label bands persisted via `FusionConfig`. On submit,
+    // the params JSON is built and POSTed to the real
+    // `POST /api/v1/metrics/definitions` endpoint.
+    // ------------------------------------------------------------------
+
+    #[derive(Properties, PartialEq)]
+    struct CreateDefinitionCardProps {
+        pub on_created: Callback<()>,
+    }
+
+    #[function_component(CreateDefinitionCard)]
+    fn create_definition_card(props: &CreateDefinitionCardProps) -> Html {
+        let auth = use_context::<AuthContext>().expect("AuthContext");
+        let toast = use_context::<ToastContext>().expect("ToastContext");
+
+        let name = use_state(String::new);
+        let formula = use_state(|| "moving_average".to_string());
+        let window_s = use_state(|| "300".to_string());
+        let sources_csv = use_state(String::new);
+
+        // Fusion-config state (applies when formula = comfort_index).
+        let min_align = use_state(|| "0.25".to_string());
+        let warn_align = use_state(|| "0.75".to_string());
+        let strict = use_state(|| true);
+        // Three confidence bands — label/min/max/css_class each.
+        let b1_label = use_state(|| "high".to_string());
+        let b1_min = use_state(|| "0.80".to_string());
+        let b1_max = use_state(|| "1.01".to_string());
+        let b1_css = use_state(|| "ok".to_string());
+        let b2_label = use_state(|| "medium".to_string());
+        let b2_min = use_state(|| "0.50".to_string());
+        let b2_max = use_state(|| "0.80".to_string());
+        let b2_css = use_state(|| "warn".to_string());
+        let b3_label = use_state(|| "low".to_string());
+        let b3_min = use_state(|| "0.0".to_string());
+        let b3_max = use_state(|| "0.50".to_string());
+        let b3_css = use_state(|| "bad".to_string());
+
+        let bind_input = |s: UseStateHandle<String>| {
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                s.set(t.value());
+            })
+        };
+        let bind_select = |s: UseStateHandle<String>| {
+            Callback::from(move |e: Event| {
+                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                s.set(t.value());
+            })
+        };
+
+        let on_toggle_strict = {
+            let strict = strict.clone();
+            Callback::from(move |e: Event| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                strict.set(t.checked());
+            })
+        };
+
+        let on_submit = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let on_created = props.on_created.clone();
+            let name = name.clone();
+            let formula = formula.clone();
+            let window_s = window_s.clone();
+            let sources_csv = sources_csv.clone();
+            let min_align = min_align.clone();
+            let warn_align = warn_align.clone();
+            let strict = strict.clone();
+            let b1_label = b1_label.clone();
+            let b1_min = b1_min.clone();
+            let b1_max = b1_max.clone();
+            let b1_css = b1_css.clone();
+            let b2_label = b2_label.clone();
+            let b2_min = b2_min.clone();
+            let b2_max = b2_max.clone();
+            let b2_css = b2_css.clone();
+            let b3_label = b3_label.clone();
+            let b3_min = b3_min.clone();
+            let b3_max = b3_max.clone();
+            let b3_css = b3_css.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                let nm = (*name).trim().to_string();
+                if nm.is_empty() {
+                    toast.error("name is required");
+                    return;
+                }
+                let Ok(win_s) = (*window_s).trim().parse::<i32>() else {
+                    toast.error("window must be an integer (seconds)");
+                    return;
+                };
+                if win_s < 0 {
+                    toast.error("window must be >= 0");
+                    return;
+                }
+                // Parse source UUIDs (comma or whitespace separated).
+                let mut src: Vec<Uuid> = Vec::new();
+                for s in (*sources_csv)
+                    .split(|c: char| c == ',' || c.is_whitespace())
+                {
+                    let s = s.trim();
+                    if s.is_empty() { continue; }
+                    match Uuid::parse_str(s) {
+                        Ok(u) => src.push(u),
+                        Err(_) => {
+                            toast.error(&format!("source id is not a UUID: {s}"));
+                            return;
+                        }
+                    }
+                }
+
+                // Build params JSON. For comfort_index, serialize the
+                // fusion config so the backend validator records it on
+                // the definition and the strict-mode alignment gate
+                // applies at query time.
+                let mut params = serde_json::Map::new();
+                if (*formula).as_str() == "comfort_index" {
+                    let parse_f = |s: &str, label: &str| -> Result<f64, String> {
+                        s.trim().parse::<f64>()
+                            .map_err(|_| format!("{label} must be a number"))
+                    };
+                    let min_a = match parse_f(&min_align, "alignment.min_alignment") {
+                        Ok(v) => v, Err(m) => { toast.error(&m); return; }
+                    };
+                    let warn_a = match parse_f(&warn_align, "alignment.warn_alignment") {
+                        Ok(v) => v, Err(m) => { toast.error(&m); return; }
+                    };
+                    params.insert(
+                        "alignment".into(),
+                        serde_json::json!({
+                            "min_alignment": min_a,
+                            "warn_alignment": warn_a,
+                            "strict": *strict,
+                        }),
+                    );
+                    let build_band = |label: &UseStateHandle<String>,
+                                      bmin: &UseStateHandle<String>,
+                                      bmax: &UseStateHandle<String>,
+                                      css: &UseStateHandle<String>|
+                     -> Result<serde_json::Value, String> {
+                        let lbl = (**label).trim().to_string();
+                        if lbl.is_empty() {
+                            return Err("confidence band label is required".into());
+                        }
+                        let mn = parse_f(bmin, "confidence band min")?;
+                        let mx = parse_f(bmax, "confidence band max")?;
+                        let css_s = (**css).trim().to_string();
+                        Ok(serde_json::json!({
+                            "label": lbl, "min": mn, "max": mx, "css_class": css_s
+                        }))
+                    };
+                    let bands = [
+                        build_band(&b1_label, &b1_min, &b1_max, &b1_css),
+                        build_band(&b2_label, &b2_min, &b2_max, &b2_css),
+                        build_band(&b3_label, &b3_min, &b3_max, &b3_css),
+                    ];
+                    let mut arr = Vec::new();
+                    for b in bands {
+                        match b {
+                            Ok(v) => arr.push(v),
+                            Err(m) => { toast.error(&m); return; }
+                        }
+                    }
+                    params.insert(
+                        "confidence_labels".into(),
+                        serde_json::Value::Array(arr),
+                    );
+                }
+                let params_val = if params.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::Value::Object(params))
+                };
+
+                let req = CreateMetricDefinitionRequest {
+                    name: nm,
+                    formula_kind: (*formula).clone(),
+                    params: params_val,
+                    source_ids: src,
+                    window_seconds: Some(win_s),
+                };
+                let api = auth.api();
+                let toast = toast.clone();
+                let on_created = on_created.clone();
+                let name = name.clone();
+                let sources_csv = sources_csv.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.create_metric_definition(&req).await {
+                        Ok(_) => {
+                            toast.success("Metric definition created.");
+                            name.set(String::new());
+                            sources_csv.set(String::new());
+                            on_created.emit(());
+                        }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        let fusion_section = if (*formula).as_str() == "comfort_index" {
+            html! {
+                <section class="tx-card tx-card--hint">
+                    <h3 class="tx-title tx-title--sm">{ "Fusion alignment + confidence labels" }</h3>
+                    <p class="tx-subtle">
+                        { "Analyst-configurable comfort_index gating. \
+                           `min_alignment` discards live points below the threshold when \
+                           strict mode is on; `warn_alignment` is the soft threshold for \
+                           the dashboard `ok` chip. Each confidence band paints the \
+                           lineage chip via `tx-chip--{css_class}`." }
+                    </p>
+                    <div class="tx-form tx-form--inline">
+                        <label class="tx-field">
+                            <span>{ "min_alignment (0..1)" }</span>
+                            <input class="tx-input" type="number" step="0.01" min="0" max="1"
+                                value={(*min_align).clone()}
+                                oninput={bind_input(min_align.clone())}/>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "warn_alignment (0..1)" }</span>
+                            <input class="tx-input" type="number" step="0.01" min="0" max="1"
+                                value={(*warn_align).clone()}
+                                oninput={bind_input(warn_align.clone())}/>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "strict" }</span>
+                            <input class="tx-input" type="checkbox"
+                                checked={*strict} onchange={on_toggle_strict}/>
+                        </label>
+                    </div>
+                    <h4 class="tx-title tx-title--sm">{ "Confidence bands" }</h4>
+                    <table class="tx-table">
+                        <thead><tr>
+                            <th>{ "Label" }</th><th>{ "Min" }</th>
+                            <th>{ "Max" }</th><th>{ "CSS class" }</th>
+                        </tr></thead>
+                        <tbody>
+                            <tr>
+                                <td><input class="tx-input" value={(*b1_label).clone()}
+                                    oninput={bind_input(b1_label.clone())}/></td>
+                                <td><input class="tx-input" type="number" step="0.01"
+                                    value={(*b1_min).clone()} oninput={bind_input(b1_min.clone())}/></td>
+                                <td><input class="tx-input" type="number" step="0.01"
+                                    value={(*b1_max).clone()} oninput={bind_input(b1_max.clone())}/></td>
+                                <td><input class="tx-input" value={(*b1_css).clone()}
+                                    oninput={bind_input(b1_css.clone())}/></td>
+                            </tr>
+                            <tr>
+                                <td><input class="tx-input" value={(*b2_label).clone()}
+                                    oninput={bind_input(b2_label.clone())}/></td>
+                                <td><input class="tx-input" type="number" step="0.01"
+                                    value={(*b2_min).clone()} oninput={bind_input(b2_min.clone())}/></td>
+                                <td><input class="tx-input" type="number" step="0.01"
+                                    value={(*b2_max).clone()} oninput={bind_input(b2_max.clone())}/></td>
+                                <td><input class="tx-input" value={(*b2_css).clone()}
+                                    oninput={bind_input(b2_css.clone())}/></td>
+                            </tr>
+                            <tr>
+                                <td><input class="tx-input" value={(*b3_label).clone()}
+                                    oninput={bind_input(b3_label.clone())}/></td>
+                                <td><input class="tx-input" type="number" step="0.01"
+                                    value={(*b3_min).clone()} oninput={bind_input(b3_min.clone())}/></td>
+                                <td><input class="tx-input" type="number" step="0.01"
+                                    value={(*b3_max).clone()} oninput={bind_input(b3_max.clone())}/></td>
+                                <td><input class="tx-input" value={(*b3_css).clone()}
+                                    oninput={bind_input(b3_css.clone())}/></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+            }
+        } else {
+            html! {}
+        };
+
+        html! {
+            <section class="tx-card">
+                <h2 class="tx-title tx-title--sm">{ "Create metric definition" }</h2>
+                <form class="tx-form" onsubmit={on_submit}>
+                    <div class="tx-form tx-form--inline">
+                        <label class="tx-field">
+                            <span>{ "Name" }</span>
+                            <input class="tx-input" required=true value={(*name).clone()}
+                                oninput={bind_input(name.clone())}/>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "Formula" }</span>
+                            <select class="tx-input" onchange={bind_select(formula.clone())}>
+                                <option value="moving_average"
+                                    selected={&*formula == "moving_average"}>
+                                    { "moving_average" }</option>
+                                <option value="rate_of_change"
+                                    selected={&*formula == "rate_of_change"}>
+                                    { "rate_of_change" }</option>
+                                <option value="comfort_index"
+                                    selected={&*formula == "comfort_index"}>
+                                    { "comfort_index (fusion)" }</option>
+                            </select>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "Window (seconds)" }</span>
+                            <input class="tx-input" type="number" min="0"
+                                value={(*window_s).clone()}
+                                oninput={bind_input(window_s.clone())}/>
+                        </label>
+                        <label class="tx-field">
+                            <span>{ "Source IDs (comma/space separated UUIDs)" }</span>
+                            <input class="tx-input" value={(*sources_csv).clone()}
+                                oninput={bind_input(sources_csv.clone())}/>
+                        </label>
+                    </div>
+                    { fusion_section }
+                    <div class="tx-form__actions">
+                        <button type="submit" class="tx-btn">{ "Create definition" }</button>
+                    </div>
+                </form>
+            </section>
         }
     }
 
@@ -2697,19 +3039,35 @@ pub mod analyst {
         let efficiency = use_state(|| LoadState::<Vec<EfficiencyRow>>::Loading);
         let drill = use_state(|| LoadState::<Vec<DrillRow>>::Loading);
 
-        // Filter form state (ISO-8601 timestamps). Empty = unfiltered.
+        // Filter form state (ISO-8601 timestamps + slicing axes). Empty
+        // fields = unfiltered. Audit #5 Issue #3: the KPI workspace now
+        // surfaces site / department / category slicing in the UI to
+        // match the backend `SliceQuery` contract in
+        // `crates/backend/src/kpi/handlers.rs`.
         let from_ts = use_state(String::new);
         let to_ts = use_state(String::new);
+        let site_id = use_state(String::new);
+        let department_id = use_state(String::new);
+        let category = use_state(String::new);
 
         let build_qs = {
             let from_ts = from_ts.clone();
             let to_ts = to_ts.clone();
+            let site_id = site_id.clone();
+            let department_id = department_id.clone();
+            let category = category.clone();
             move || -> String {
                 let mut parts = Vec::new();
                 let f = (*from_ts).trim().to_string();
                 let t = (*to_ts).trim().to_string();
+                let s = (*site_id).trim().to_string();
+                let d = (*department_id).trim().to_string();
+                let c = (*category).trim().to_string();
                 if !f.is_empty() { parts.push(format!("from={f}")); }
                 if !t.is_empty() { parts.push(format!("to={t}")); }
+                if !s.is_empty() { parts.push(format!("site_id={s}")); }
+                if !d.is_empty() { parts.push(format!("department_id={d}")); }
+                if !c.is_empty() { parts.push(format!("category={c}")); }
                 parts.join("&")
             }
         };
@@ -2777,7 +3135,7 @@ pub mod analyst {
 
         let filters = html! {
             <section class="tx-card">
-                <h2 class="tx-title tx-title--sm">{ "Time window" }</h2>
+                <h2 class="tx-title tx-title--sm">{ "Time window + slicing" }</h2>
                 <form class="tx-form tx-form--inline" onsubmit={on_submit}>
                     <label class="tx-field">
                         <span>{ "From (YYYY-MM-DD)" }</span>
@@ -2789,12 +3147,47 @@ pub mod analyst {
                         <input class="tx-input" type="date" value={(*to_ts).clone()}
                             oninput={bind_input(to_ts.clone())}/>
                     </label>
+                    <label class="tx-field">
+                        <span>{ "Site (UUID, optional)" }</span>
+                        <input class="tx-input" type="text" value={(*site_id).clone()}
+                            placeholder="site uuid"
+                            oninput={bind_input(site_id.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Department (UUID, optional)" }</span>
+                        <input class="tx-input" type="text" value={(*department_id).clone()}
+                            placeholder="department uuid"
+                            oninput={bind_input(department_id.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Category (optional)" }</span>
+                        <input class="tx-input" type="text" value={(*category).clone()}
+                            placeholder="e.g. cycle_time"
+                            oninput={bind_input(category.clone())}/>
+                    </label>
                     <div class="tx-form__actions">
                         <button type="submit" class="tx-btn">{ "Apply" }</button>
+                        <button type="button" class="tx-btn tx-btn--ghost" onclick={{
+                            let from_ts = from_ts.clone();
+                            let to_ts = to_ts.clone();
+                            let site_id = site_id.clone();
+                            let department_id = department_id.clone();
+                            let category = category.clone();
+                            let reload = reload.clone();
+                            Callback::from(move |_: MouseEvent| {
+                                from_ts.set(String::new());
+                                to_ts.set(String::new());
+                                site_id.set(String::new());
+                                department_id.set(String::new());
+                                category.set(String::new());
+                                reload.emit(());
+                            })
+                        }}>{ "Clear" }</button>
                     </div>
                 </form>
                 <p class="tx-subtle">
-                    { "Leave both fields empty for the default rolling window." }
+                    { "Empty fields = unfiltered. Site / department / category slice every \
+                       table below via the backend SliceQuery contract." }
                 </p>
             </section>
         };
@@ -2975,6 +3368,12 @@ pub mod analyst {
         let metric_id = use_state(String::new);
         let threshold = use_state(String::new);
         let op = use_state(|| ">".to_string());
+        // Audit #5 Issue #6: prompt-style threshold rules need
+        // duration (seconds the condition must hold before firing)
+        // and severity (info|warning|critical). Both already exist
+        // in the backend CreateAlertRuleRequest contract.
+        let duration_s = use_state(|| "0".to_string());
+        let severity = use_state(|| "warning".to_string());
 
         let reload = {
             let auth = auth.clone();
@@ -3009,9 +3408,23 @@ pub mod analyst {
         };
         let on_op = {
             let op = op.clone();
+            Callback::from(move |e: Event| {
+                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                op.set(t.value());
+            })
+        };
+        let on_duration = {
+            let duration_s = duration_s.clone();
             Callback::from(move |e: InputEvent| {
                 let t: HtmlInputElement = e.target_unchecked_into();
-                op.set(t.value());
+                duration_s.set(t.value());
+            })
+        };
+        let on_severity = {
+            let severity = severity.clone();
+            Callback::from(move |e: Event| {
+                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                severity.set(t.value());
             })
         };
 
@@ -3022,6 +3435,8 @@ pub mod analyst {
             let metric_id = metric_id.clone();
             let threshold = threshold.clone();
             let op = op.clone();
+            let duration_s = duration_s.clone();
+            let severity = severity.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
                 let Ok(mid) = Uuid::parse_str(metric_id.trim()) else {
@@ -3032,12 +3447,22 @@ pub mod analyst {
                     toast.error("threshold must be a number");
                     return;
                 };
+                let dur_parsed = (*duration_s).trim().parse::<i32>().unwrap_or(0);
+                if dur_parsed < 0 {
+                    toast.error("duration must be >= 0 seconds");
+                    return;
+                }
+                let sev = (*severity).clone();
+                if !["info", "warning", "critical"].contains(&sev.as_str()) {
+                    toast.error("severity must be info|warning|critical");
+                    return;
+                }
                 let req = CreateAlertRuleRequest {
                     metric_definition_id: mid,
                     threshold: th,
                     operator: (*op).clone(),
-                    duration_seconds: None,
-                    severity: None,
+                    duration_seconds: Some(dur_parsed),
+                    severity: Some(sev),
                 };
                 let api = auth.api();
                 let toast = toast.clone();
@@ -3057,12 +3482,31 @@ pub mod analyst {
                 <form class="tx-form tx-form--row" onsubmit={on_create}>
                     <input class="tx-input" placeholder="metric_definition_id (UUID)"
                            required=true value={(*metric_id).clone()} oninput={on_mid}/>
-                    <input class="tx-input" placeholder="threshold" required=true
+                    <input class="tx-input" type="number" step="any"
+                           placeholder="threshold" required=true
                            value={(*threshold).clone()} oninput={on_th}/>
-                    <input class="tx-input" placeholder="&gt; &lt; &gt;= &lt;="
-                           required=true value={(*op).clone()} oninput={on_op}/>
+                    <select class="tx-input" onchange={on_op}>
+                        <option value=">"  selected={&*op == ">"}>{ ">" }</option>
+                        <option value="<"  selected={&*op == "<"}>{ "<" }</option>
+                        <option value=">=" selected={&*op == ">="}>{ ">=" }</option>
+                        <option value="<=" selected={&*op == "<="}>{ "<=" }</option>
+                        <option value="="  selected={&*op == "="}>{ "=" }</option>
+                    </select>
+                    <input class="tx-input" type="number" min="0"
+                           placeholder="duration seconds (0 = fire immediately)"
+                           value={(*duration_s).clone()} oninput={on_duration}/>
+                    <select class="tx-input" onchange={on_severity}>
+                        <option value="info"     selected={&*severity == "info"}>{ "info" }</option>
+                        <option value="warning"  selected={&*severity == "warning"}>{ "warning" }</option>
+                        <option value="critical" selected={&*severity == "critical"}>{ "critical" }</option>
+                    </select>
                     <button class="tx-btn" type="submit">{ "Create" }</button>
                 </form>
+                <p class="tx-subtle">
+                    { "Duration is the minimum time the threshold must hold before the rule \
+                       fires — a prompt-style sustained-breach gate. Severity drives \
+                       notification priority and the alert_digest report filter." }
+                </p>
             </section>
         };
 
@@ -3075,13 +3519,16 @@ pub mod analyst {
             LoadState::Loaded(rows) => {
                 let headers = vec![
                     AttrValue::from("Metric"), AttrValue::from("Op"),
-                    AttrValue::from("Threshold"), AttrValue::from("Severity"),
+                    AttrValue::from("Threshold"),
+                    AttrValue::from("Duration"),
+                    AttrValue::from("Severity"),
                     AttrValue::from("Enabled"),
                 ];
                 let trows: Vec<Vec<Html>> = rows.iter().map(|r| vec![
                     html! { <span class="tx-mono tx-truncate">{ r.metric_definition_id.to_string() }</span> },
                     html! { <code>{ r.operator.clone() }</code> },
                     html! { { format!("{:.3}", r.threshold) } },
+                    html! { <span class="tx-mono">{ format!("{}s", r.duration_seconds) }</span> },
                     html! { <span class="tx-chip">{ r.severity.clone() }</span> },
                     html! { if r.enabled { {"✔"} } else { {"—"} } },
                 ]).collect();
@@ -3110,9 +3557,22 @@ pub mod analyst {
         let list = use_state(|| LoadState::<Vec<ReportJobDto>>::Loading);
 
         // Create form state — `kind` × `format` × optional cron (RP1–RP2).
+        // Audit #5 Issue #1: frontend kinds/formats now match the real
+        // backend contract in `crates/backend/src/reports/handlers.rs`
+        // (kpi_summary|env_series|alert_digest × pdf|csv|xlsx).
+        // Audit #5 Issue #2: the form captures the prompt-required
+        // filter params (since/until/limit/severity/source_id/
+        // definition_id) and serialises them into the job's `params`
+        // JSONB so the scheduler can honor them end-to-end.
         let kind = use_state(|| "kpi_summary".to_string());
         let fmt = use_state(|| "csv".to_string());
         let cron = use_state(String::new);
+        let since = use_state(String::new);
+        let until = use_state(String::new);
+        let limit = use_state(|| "50".to_string());
+        let severity = use_state(String::new);
+        let source_id = use_state(String::new);
+        let definition_id = use_state(String::new);
 
         let reload = {
             let auth = auth.clone();
@@ -3155,16 +3615,63 @@ pub mod analyst {
             let kind = kind.clone();
             let fmt = fmt.clone();
             let cron = cron.clone();
+            let since = since.clone();
+            let until = until.clone();
+            let limit = limit.clone();
+            let severity = severity.clone();
+            let source_id = source_id.clone();
+            let definition_id = definition_id.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
                 let cron_val = {
                     let t = (*cron).trim();
                     if t.is_empty() { None } else { Some(t.to_string()) }
                 };
+                // Build a params JSON object honoring any fields the
+                // analyst filled in. Missing fields are omitted so the
+                // backend defaults apply.
+                let mut obj = serde_json::Map::new();
+                let s_since = (*since).trim().to_string();
+                if !s_since.is_empty() {
+                    obj.insert("since".into(), serde_json::Value::String(s_since));
+                }
+                let s_until = (*until).trim().to_string();
+                if !s_until.is_empty() {
+                    obj.insert("until".into(), serde_json::Value::String(s_until));
+                }
+                if let Ok(n) = (*limit).trim().parse::<i64>() {
+                    obj.insert("limit".into(), serde_json::Value::Number(n.into()));
+                }
+                match (*kind).as_str() {
+                    "alert_digest" => {
+                        let s = (*severity).trim().to_string();
+                        if !s.is_empty() {
+                            obj.insert("severity".into(), serde_json::Value::String(s));
+                        }
+                    }
+                    "env_series" => {
+                        let s = (*source_id).trim().to_string();
+                        if !s.is_empty() {
+                            obj.insert("source_id".into(), serde_json::Value::String(s));
+                        }
+                    }
+                    "kpi_summary" => {
+                        let s = (*definition_id).trim().to_string();
+                        if !s.is_empty() {
+                            obj.insert("definition_id".into(), serde_json::Value::String(s));
+                        }
+                    }
+                    _ => {}
+                }
+                let params_val = if obj.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::Value::Object(obj))
+                };
                 let req = terraops_shared::dto::report::CreateReportJobRequest {
                     kind: (*kind).clone(),
                     format: (*fmt).clone(),
-                    params: None,
+                    params: params_val,
                     cron: cron_val,
                 };
                 let api = auth.api();
@@ -3220,6 +3727,40 @@ pub mod analyst {
             })
         };
 
+        // Kind-specific extra filter field (single optional UUID or
+        // severity chip). Rendered conditionally so the analyst only
+        // sees inputs that actually affect the chosen kind.
+        let extra_filter = match (*kind).as_str() {
+            "alert_digest" => html! {
+                <label class="tx-field">
+                    <span>{ "Severity" }</span>
+                    <select class="tx-input" onchange={bind_str(severity.clone())}>
+                        <option value="" selected={(*severity).is_empty()}>{ "— any —" }</option>
+                        <option value="info"     selected={&*severity == "info"}>{ "info" }</option>
+                        <option value="warning"  selected={&*severity == "warning"}>{ "warning" }</option>
+                        <option value="critical" selected={&*severity == "critical"}>{ "critical" }</option>
+                    </select>
+                </label>
+            },
+            "env_series" => html! {
+                <label class="tx-field">
+                    <span>{ "Source ID (UUID, optional)" }</span>
+                    <input class="tx-input" type="text" value={(*source_id).clone()}
+                        placeholder="source uuid"
+                        oninput={bind_input(source_id.clone())}/>
+                </label>
+            },
+            "kpi_summary" => html! {
+                <label class="tx-field">
+                    <span>{ "Definition ID (UUID, optional)" }</span>
+                    <input class="tx-input" type="text" value={(*definition_id).clone()}
+                        placeholder="metric definition uuid"
+                        oninput={bind_input(definition_id.clone())}/>
+                </label>
+            },
+            _ => html! {},
+        };
+
         let create_card = html! {
             <section class="tx-card">
                 <h2 class="tx-title tx-title--sm">{ "Schedule a new report" }</h2>
@@ -3229,23 +3770,39 @@ pub mod analyst {
                         <select class="tx-input" onchange={bind_str(kind.clone())}>
                             <option value="kpi_summary"
                                 selected={&*kind == "kpi_summary"}>{ "KPI summary" }</option>
-                            <option value="kpi_cycle_time"
-                                selected={&*kind == "kpi_cycle_time"}>{ "KPI cycle time" }</option>
-                            <option value="kpi_efficiency"
-                                selected={&*kind == "kpi_efficiency"}>{ "KPI efficiency" }</option>
-                            <option value="env_observations"
-                                selected={&*kind == "env_observations"}>{ "Env observations" }</option>
-                            <option value="alerts"
-                                selected={&*kind == "alerts"}>{ "Alerts" }</option>
+                            <option value="env_series"
+                                selected={&*kind == "env_series"}>{ "Env observations (series)" }</option>
+                            <option value="alert_digest"
+                                selected={&*kind == "alert_digest"}>{ "Alert digest" }</option>
                         </select>
                     </label>
                     <label class="tx-field">
                         <span>{ "Format" }</span>
                         <select class="tx-input" onchange={bind_str(fmt.clone())}>
                             <option value="csv"  selected={&*fmt == "csv"}>{ "CSV" }</option>
-                            <option value="json" selected={&*fmt == "json"}>{ "JSON" }</option>
+                            <option value="pdf"  selected={&*fmt == "pdf"}>{ "PDF" }</option>
+                            <option value="xlsx" selected={&*fmt == "xlsx"}>{ "XLSX" }</option>
                         </select>
                     </label>
+                    <label class="tx-field">
+                        <span>{ "Since (RFC 3339, optional)" }</span>
+                        <input class="tx-input" type="text" value={(*since).clone()}
+                            placeholder="2026-04-01T00:00:00Z"
+                            oninput={bind_input(since.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Until (RFC 3339, optional)" }</span>
+                        <input class="tx-input" type="text" value={(*until).clone()}
+                            placeholder="2026-04-20T23:59:59Z"
+                            oninput={bind_input(until.clone())}/>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Row limit (1..=1000)" }</span>
+                        <input class="tx-input" type="number" min="1" max="1000"
+                            value={(*limit).clone()}
+                            oninput={bind_input(limit.clone())}/>
+                    </label>
+                    { extra_filter }
                     <label class="tx-field">
                         <span>{ "Cron (optional)" }</span>
                         <input class="tx-input" type="text" value={(*cron).clone()}
@@ -3257,7 +3814,8 @@ pub mod analyst {
                     </div>
                 </form>
                 <p class="tx-subtle">
-                    { "Leave cron empty for a one-off job. The server enqueues it immediately." }
+                    { "Leave cron empty for a one-off job. The scheduler honors the \
+                       filter block as persisted params; only the fields you fill are sent." }
                 </p>
             </section>
         };
@@ -3454,9 +4012,9 @@ pub mod user {
 pub mod recruiter {
     use super::*;
     use terraops_shared::dto::talent::{
-        CandidateDetail, CandidateListItem, CreateFeedbackRequest,
+        AddWatchlistItemRequest, CandidateDetail, CandidateListItem, CreateFeedbackRequest,
         CreateRoleRequest, CreateWatchlistRequest, RankedCandidate, RoleOpenItem,
-        UpdateWeightsRequest, WatchlistItem,
+        UpdateWeightsRequest, WatchlistEntry, WatchlistItem,
     };
 
     #[function_component(Candidates)]
@@ -4316,18 +4874,194 @@ pub mod recruiter {
                 let headers = vec![
                     AttrValue::from("Name"), AttrValue::from("Items"),
                     AttrValue::from("Created"), AttrValue::from("Updated"),
+                    AttrValue::from(""),
                 ];
-                let trows: Vec<Vec<Html>> = rows.iter().map(|w| vec![
-                    html! { { w.name.clone() } },
-                    html! { { w.item_count } },
-                    html! { <span class="tx-mono">{ format_ts(w.created_at) }</span> },
-                    html! { <span class="tx-mono">{ format_ts(w.updated_at) }</span> },
-                ]).collect();
+                let trows: Vec<Vec<Html>> = rows.iter().map(|w| {
+                    let wid = w.id;
+                    vec![
+                        html! { { w.name.clone() } },
+                        html! { { w.item_count } },
+                        html! { <span class="tx-mono">{ format_ts(w.created_at) }</span> },
+                        html! { <span class="tx-mono">{ format_ts(w.updated_at) }</span> },
+                        html! {
+                            <Link<Route> to={Route::TalentWatchlistDetail { id: wid }}
+                                         classes={classes!("tx-link")}>
+                                { "Open →" }
+                            </Link<Route>>
+                        },
+                    ]
+                }).collect();
                 html! { <DataTable headers={headers} rows={trows} empty_label="No watchlists yet."/> }
             }
         };
 
         html! { <>{ create_card }{ body }</> }
+    }
+
+    // ------------------------------------------------------------------
+    // Audit #5 Issue #5: recruiter watchlist maintenance.
+    // Detail page lets the recruiter see members of one watchlist, add
+    // candidates by UUID, and remove them. This is the real
+    // prompt-required maintenance surface.
+    // ------------------------------------------------------------------
+
+    #[derive(Properties, PartialEq)]
+    pub struct WatchlistDetailProps {
+        pub id: Uuid,
+    }
+
+    #[function_component(WatchlistDetail)]
+    pub fn watchlist_detail(props: &WatchlistDetailProps) -> Html {
+        let id = props.id;
+        html! {
+            <Layout title="Watchlist" subtitle="Pinned candidates for this watchlist.">
+                <PermGate permission="talent.read">
+                    <WatchlistDetailBody {id} />
+                </PermGate>
+            </Layout>
+        }
+    }
+
+    #[function_component(WatchlistDetailBody)]
+    fn watchlist_detail_body(props: &WatchlistDetailProps) -> Html {
+        let id = props.id;
+        let auth = use_context::<AuthContext>().expect("AuthContext");
+        let toast = use_context::<ToastContext>().expect("ToastContext");
+        let items = use_state(|| LoadState::<Vec<WatchlistEntry>>::Loading);
+        let new_cid = use_state(String::new);
+
+        let reload = {
+            let auth = auth.clone();
+            let items = items.clone();
+            Callback::from(move |_: ()| {
+                let api = auth.api();
+                let items = items.clone();
+                items.set(LoadState::Loading);
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.list_watchlist_items(id).await {
+                        Ok(v) => items.set(LoadState::Loaded(v)),
+                        Err(e) => items.set(LoadState::Failed(e.user_facing())),
+                    }
+                });
+            })
+        };
+        { let r = reload.clone(); use_effect_with(id, move |_| { r.emit(()); || () }); }
+
+        let on_new_cid = {
+            let new_cid = new_cid.clone();
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                new_cid.set(t.value());
+            })
+        };
+
+        let on_add = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let reload = reload.clone();
+            let new_cid = new_cid.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                let Ok(cid) = Uuid::parse_str(new_cid.trim()) else {
+                    toast.error("candidate id must be a UUID");
+                    return;
+                };
+                let api = auth.api();
+                let toast = toast.clone();
+                let reload = reload.clone();
+                let new_cid = new_cid.clone();
+                let req = AddWatchlistItemRequest { candidate_id: cid };
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.add_watchlist_item(id, &req).await {
+                        Ok(_) => {
+                            toast.success("Candidate added.");
+                            new_cid.set(String::new());
+                            reload.emit(());
+                        }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        let on_remove = {
+            let auth = auth.clone();
+            let toast = toast.clone();
+            let reload = reload.clone();
+            Callback::from(move |cid: Uuid| {
+                let api = auth.api();
+                let toast = toast.clone();
+                let reload = reload.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api.remove_watchlist_item(id, cid).await {
+                        Ok(_) => {
+                            toast.success("Candidate removed.");
+                            reload.emit(());
+                        }
+                        Err(e) => toast.error(&e.user_facing()),
+                    }
+                });
+            })
+        };
+
+        let add_card = html! {
+            <section class="tx-card">
+                <h2 class="tx-title tx-title--sm">{ "Add candidate to this watchlist" }</h2>
+                <form class="tx-form tx-form--row" onsubmit={on_add}>
+                    <input class="tx-input" placeholder="candidate UUID"
+                           required=true value={(*new_cid).clone()} oninput={on_new_cid}/>
+                    <button class="tx-btn" type="submit">{ "Add" }</button>
+                </form>
+                <p class="tx-subtle">
+                    { "Copy a candidate UUID from the Candidates page. \
+                       Duplicate additions are silently ignored." }
+                </p>
+            </section>
+        };
+
+        let body = match &*items {
+            LoadState::Loading => html! { <PlaceholderLoading/> },
+            LoadState::Failed(m) => html! {
+                <PlaceholderError message={AttrValue::from(m.clone())}
+                    on_retry={Some({ let r = reload.clone(); Callback::from(move |_| r.emit(())) })}/>
+            },
+            LoadState::Loaded(rows) => {
+                let headers = vec![
+                    AttrValue::from("Candidate"),
+                    AttrValue::from("Email"),
+                    AttrValue::from("Years"),
+                    AttrValue::from("Skills"),
+                    AttrValue::from("Added"),
+                    AttrValue::from(""),
+                ];
+                let trows: Vec<Vec<Html>> = rows.iter().map(|w| {
+                    let cid = w.candidate.id;
+                    let on_remove = on_remove.clone();
+                    let onclk = Callback::from(move |_: MouseEvent| on_remove.emit(cid));
+                    vec![
+                        html! {
+                            <Link<Route> to={Route::TalentCandidateDetail { id: cid }}
+                                         classes={classes!("tx-link")}>
+                                { w.candidate.full_name.clone() }
+                            </Link<Route>>
+                        },
+                        html! { <span class="tx-mono">{ w.candidate.email_mask.clone() }</span> },
+                        html! { { w.candidate.years_experience } },
+                        html! { <span class="tx-mono tx-truncate">{ w.candidate.skills.join(", ") }</span> },
+                        html! { <span class="tx-mono">{ format_ts(w.added_at) }</span> },
+                        html! {
+                            <button class="tx-btn tx-btn--ghost" onclick={onclk}>
+                                { "Remove" }
+                            </button>
+                        },
+                    ]
+                }).collect();
+                html! { <DataTable headers={headers} rows={trows}
+                                   empty_label="No candidates on this watchlist yet."/> }
+            }
+        };
+
+        html! { <>{ add_card }{ body }</> }
     }
 }
 
