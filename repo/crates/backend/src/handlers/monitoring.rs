@@ -152,23 +152,55 @@ fn redact(input: &str) -> String {
         out.replace_range(pos..end, "Authorization: <redacted>");
     }
     // Bearer <token> anywhere.
-    while let Some(pos) = out.to_ascii_lowercase().find("bearer ") {
-        let after = &out[pos + 7..];
-        let end_off = after
-            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
-            .unwrap_or(after.len());
-        out.replace_range(pos..pos + 7 + end_off, "Bearer <redacted>");
-    }
-    // Key-eq-value style.
-    for key in ["password", "api_key", "apikey", "secret", "token"] {
-        let lc_key = format!("{key}=");
-        while let Some(pos) = out.to_ascii_lowercase().find(&lc_key) {
-            let after_start = pos + lc_key.len();
-            let end_off = out[after_start..]
-                .find(|c: char| c == '&' || c == ' ' || c == '"' || c == '\'' || c == '\n')
-                .unwrap_or(out.len() - after_start);
-            out.replace_range(pos..after_start + end_off, &format!("{key}=<redacted>"));
+    //
+    // Advance `search_start` past the *original* token after each replacement
+    // so the replacement text "Bearer <redacted>" (which contains "bearer ")
+    // is never re-scanned. A plain `while out.find("bearer ")` loop would
+    // infinite-loop because the replacement reintroduces the needle.
+    out = {
+        let mut result = String::with_capacity(out.len());
+        let mut search_start = 0usize;
+        loop {
+            match out[search_start..].to_ascii_lowercase().find("bearer ") {
+                None => { result.push_str(&out[search_start..]); break; }
+                Some(rel) => {
+                    let pos = search_start + rel;
+                    let token_start = pos + 7; // skip "bearer "
+                    let end_off = out[token_start..]
+                        .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                        .unwrap_or(out.len() - token_start);
+                    result.push_str(&out[search_start..pos]);
+                    result.push_str("Bearer <redacted>");
+                    search_start = token_start + end_off; // advance past original token
+                }
+            }
         }
+        result
+    };
+    // Key=value style — same position-advancing pattern to avoid re-scanning
+    // the replacement text (e.g. "token=<redacted>" still contains "token=").
+    for key in ["password", "api_key", "apikey", "secret", "token"] {
+        let needle = format!("{key}=");
+        out = {
+            let mut result = String::with_capacity(out.len());
+            let mut search_start = 0usize;
+            loop {
+                match out[search_start..].to_ascii_lowercase().find(&needle) {
+                    None => { result.push_str(&out[search_start..]); break; }
+                    Some(rel) => {
+                        let pos = search_start + rel;
+                        let val_start = pos + needle.len();
+                        let end_off = out[val_start..]
+                            .find(|c: char| c == '&' || c == ' ' || c == '"' || c == '\'' || c == '\n')
+                            .unwrap_or(out.len() - val_start);
+                        result.push_str(&out[search_start..pos]);
+                        result.push_str(&format!("{key}=<redacted>"));
+                        search_start = val_start + end_off; // advance past original value
+                    }
+                }
+            }
+            result
+        };
     }
     // JWT-looking triples — three base64url segments joined by `.`.
     let mut cleaned = String::with_capacity(out.len());
