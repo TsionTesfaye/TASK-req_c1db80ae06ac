@@ -25,20 +25,39 @@ use yew_router::prelude::*;
 
 use crate::api::ApiClient;
 use crate::components::{
-    DataTable, Layout, PermAnyGate, PermGate, PlaceholderEmpty, PlaceholderError,
-    PlaceholderLoading, ServerPager,
+    DataTable, Layout, LoadMore, PermAnyGate, PermGate, PlaceholderEmpty, PlaceholderError,
+    PlaceholderLoading,
 };
 use crate::router::Route;
 use crate::state::{AuthContext, AuthState, ToastContext};
 
 /// Format a timestamp for UI display in the required MM/DD/YYYY 12-hour
-/// format — e.g. `04/20/2026 02:05 PM`. Renders in UTC, matching the
-/// offline-single-node deployment model where there is no per-user
-/// timezone preference surfaced to the SPA. Wrapper so every call site
-/// renders consistently and a future timezone-aware override lives in one
-/// place.
+/// format — e.g. `04/20/2026 02:05 PM`.
+///
+/// Audit #11 Issue #3: the SPA must render timestamps in the viewer's
+/// local timezone, not UTC, and it must do so through the centralized
+/// `terraops_shared::time::format_display` helper so the display contract
+/// stays in one place across backend and frontend. We derive the offset
+/// from the browser's current timezone via `Date.getTimezoneOffset()`
+/// (returns minutes *west* of UTC — inverted sign — per the ECMAScript
+/// spec) and hand the resulting offset-in-seconds to the shared helper.
 pub(crate) fn format_ts(dt: chrono::DateTime<chrono::Utc>) -> String {
-    dt.format("%m/%d/%Y %I:%M %p").to_string()
+    terraops_shared::time::format_display(dt, local_offset_seconds())
+}
+
+/// Offset from UTC in **seconds** for the browser's current timezone. A
+/// negative value means west of UTC (e.g. US/Eastern in April is `-14400`).
+/// Falls back to UTC (`0`) outside the browser context so server-side
+/// renders / tests stay deterministic.
+fn local_offset_seconds() -> i32 {
+    // `Date.getTimezoneOffset()` returns the difference, in minutes, from
+    // local time to UTC — i.e. UTC minus local, positive for zones west of
+    // UTC. We want local minus UTC in seconds, so we negate and multiply.
+    let minutes_west = js_sys::Date::new_0().get_timezone_offset();
+    if !minutes_west.is_finite() {
+        return 0;
+    }
+    (-minutes_west * 60.0) as i32
 }
 
 /// Same contract as `format_ts` but for `Option<DateTime<Utc>>`; falls back
@@ -1510,10 +1529,14 @@ pub mod data_steward {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let list = use_state(|| LoadState::<Vec<ProductListItem>>::Loading);
-        // Audit #6 Issue #3: server pagination state.
+        // Audit #6 Issue #3: server-side pagination still drives the backend
+        // call (50 rows per request). Audit #11 Issue #4: the UI now
+        // accumulates rows across fetches and exposes a "Load more" button
+        // instead of classic Prev/Next page navigation.
         let page = use_state(|| 1u32);
         let page_size: u32 = 50;
         let total = use_state(|| Option::<u64>::None);
+        let loading_more = use_state(|| false);
 
         let sku = use_state(String::new);
         let name = use_state(String::new);
@@ -1524,42 +1547,66 @@ pub mod data_steward {
         let barcode = use_state(String::new);
         let shelf_life_days = use_state(String::new);
 
-        let reload = {
+        // `fetch` drives every network call. `(target_page, append)`:
+        //   * `(1, false)` is a fresh reload — clears rows, shows the full
+        //     loading placeholder, used on mount, on successful create, and
+        //     when a filter changes (not applicable here but preserves the
+        //     shape used across Audit #11 Issue #4 sites).
+        //   * `(n, true)` appends page `n` to the existing accumulator for
+        //     the "Load more" button; rows stay visible and only the button
+        //     shows a local "Loading…" state.
+        let fetch = {
             let auth = auth.clone();
             let list = list.clone();
             let total = total.clone();
             let page = page.clone();
-            Callback::from(move |_: ()| {
+            let loading_more = loading_more.clone();
+            Callback::from(move |(target_page, append): (u32, bool)| {
                 let api = auth.api();
                 let list = list.clone();
                 let total = total.clone();
-                let qs = format!("page={}&page_size={}", *page, 50);
-                list.set(LoadState::Loading);
+                let page = page.clone();
+                let loading_more = loading_more.clone();
+                let existing: Vec<ProductListItem> = if append {
+                    match &*list {
+                        LoadState::Loaded(v) => v.clone(),
+                        _ => Vec::new(),
+                    }
+                } else { Vec::new() };
+                page.set(target_page);
+                if append { loading_more.set(true); } else { list.set(LoadState::Loading); }
+                let qs = format!("page={target_page}&page_size={page_size}");
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.list_products_page_query(&qs).await {
                         Ok(p) => {
                             total.set(Some(p.total));
-                            list.set(LoadState::Loaded(p.items));
+                            let mut combined = existing;
+                            combined.extend(p.items);
+                            list.set(LoadState::Loaded(combined));
+                            loading_more.set(false);
                         }
-                        Err(e) => list.set(LoadState::Failed(e.user_facing())),
+                        Err(e) => {
+                            loading_more.set(false);
+                            if !append {
+                                list.set(LoadState::Failed(e.user_facing()));
+                            }
+                        }
                     }
                 });
             })
         };
-        {
-            let r = reload.clone();
-            let p = *page;
-            use_effect_with(p, move |_| { r.emit(()); || () });
-        }
-        let on_prev = {
-            let page = page.clone();
-            Callback::from(move |_: MouseEvent| {
-                if *page > 1 { page.set(*page - 1); }
-            })
+        let reload = {
+            let fetch = fetch.clone();
+            Callback::from(move |_: ()| { fetch.emit((1, false)); })
         };
-        let on_next = {
+        {
+            let fetch = fetch.clone();
+            use_effect_with((), move |_| { fetch.emit((1, false)); || () });
+        }
+        let on_more = {
+            let fetch = fetch.clone();
             let page = page.clone();
-            Callback::from(move |_: MouseEvent| { page.set(*page + 1); })
+            Callback::from(move |_: MouseEvent| { fetch.emit((*page + 1, true)); })
         };
 
         let on_sku = {
@@ -1727,10 +1774,11 @@ pub mod data_steward {
                         html! { <span class="tx-mono">{ format_ts(p.updated_at) }</span> },
                     ]
                 }).collect();
+                let loaded = rows.len() as u32;
                 html! { <>
                     <DataTable headers={headers} rows={trows} empty_label="No products."/>
-                    <ServerPager page={*page} page_size={page_size} total={*total}
-                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                    <LoadMore loaded={loaded} total={*total} loading={*loading_more}
+                              on_more={on_more.clone()} />
                 </> }
             }
         };
@@ -2419,45 +2467,65 @@ pub mod analyst {
     fn observations_body() -> Html {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let list = use_state(|| LoadState::<Vec<ObservationDto>>::Loading);
-        // Audit #6 Issue #3: server pagination.
+        // Audit #6 Issue #3 kept (server pagination, 50 rows per call);
+        // Audit #11 Issue #4: accumulate + "Load more" rather than Prev/Next.
         let page = use_state(|| 1u32);
         let page_size: u32 = 50;
         let total = use_state(|| Option::<u64>::None);
+        let loading_more = use_state(|| false);
 
-        let reload = {
+        let fetch = {
             let auth = auth.clone();
             let list = list.clone();
             let total = total.clone();
             let page = page.clone();
-            Callback::from(move |_: ()| {
+            let loading_more = loading_more.clone();
+            Callback::from(move |(target_page, append): (u32, bool)| {
                 let api = auth.api();
                 let list = list.clone();
                 let total = total.clone();
-                let qs = format!("page={}&page_size={}", *page, 50);
-                list.set(LoadState::Loading);
+                let page = page.clone();
+                let loading_more = loading_more.clone();
+                let existing: Vec<ObservationDto> = if append {
+                    match &*list {
+                        LoadState::Loaded(v) => v.clone(),
+                        _ => Vec::new(),
+                    }
+                } else { Vec::new() };
+                page.set(target_page);
+                if append { loading_more.set(true); } else { list.set(LoadState::Loading); }
+                let qs = format!("page={target_page}&page_size={page_size}");
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.list_observations_page(&qs).await {
                         Ok(p) => {
                             total.set(Some(p.total));
-                            list.set(LoadState::Loaded(p.items));
+                            let mut combined = existing;
+                            combined.extend(p.items);
+                            list.set(LoadState::Loaded(combined));
+                            loading_more.set(false);
                         }
-                        Err(e) => list.set(LoadState::Failed(e.user_facing())),
+                        Err(e) => {
+                            loading_more.set(false);
+                            if !append {
+                                list.set(LoadState::Failed(e.user_facing()));
+                            }
+                        }
                     }
                 });
             })
         };
-        {
-            let r = reload.clone();
-            let p = *page;
-            use_effect_with(p, move |_| { r.emit(()); || () });
-        }
-        let on_prev = {
-            let page = page.clone();
-            Callback::from(move |_: MouseEvent| { if *page > 1 { page.set(*page - 1); } })
+        let reload = {
+            let fetch = fetch.clone();
+            Callback::from(move |_: ()| { fetch.emit((1, false)); })
         };
-        let on_next = {
+        {
+            let fetch = fetch.clone();
+            use_effect_with((), move |_| { fetch.emit((1, false)); || () });
+        }
+        let on_more = {
+            let fetch = fetch.clone();
             let page = page.clone();
-            Callback::from(move |_: MouseEvent| { page.set(*page + 1); })
+            Callback::from(move |_: MouseEvent| { fetch.emit((*page + 1, true)); })
         };
 
         match &*list {
@@ -2477,10 +2545,11 @@ pub mod analyst {
                     html! { { format!("{:.3}", o.value) } },
                     html! { { o.unit.clone() } },
                 ]).collect();
+                let loaded = rows.len() as u32;
                 html! { <>
                     <DataTable headers={headers} rows={trows} empty_label="No observations yet."/>
-                    <ServerPager page={*page} page_size={page_size} total={*total}
-                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                    <LoadMore loaded={loaded} total={*total} loading={*loading_more}
+                              on_more={on_more.clone()} />
                 </> }
             }
         }
@@ -4259,45 +4328,65 @@ pub mod user {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let list = use_state(|| LoadState::<Vec<AlertEventDto>>::Loading);
-        // Audit #6 Issue #3: server pagination.
+        // Audit #6 Issue #3 (server pagination) + Audit #11 Issue #4
+        // (incremental Load more).
         let page = use_state(|| 1u32);
         let page_size: u32 = 50;
         let total = use_state(|| Option::<u64>::None);
+        let loading_more = use_state(|| false);
 
-        let reload = {
+        let fetch = {
             let auth = auth.clone();
             let list = list.clone();
             let total = total.clone();
             let page = page.clone();
-            Callback::from(move |_: ()| {
+            let loading_more = loading_more.clone();
+            Callback::from(move |(target_page, append): (u32, bool)| {
                 let api = auth.api();
                 let list = list.clone();
                 let total = total.clone();
-                let qs = format!("page={}&page_size={}", *page, 50);
-                list.set(LoadState::Loading);
+                let page = page.clone();
+                let loading_more = loading_more.clone();
+                let existing: Vec<AlertEventDto> = if append {
+                    match &*list {
+                        LoadState::Loaded(v) => v.clone(),
+                        _ => Vec::new(),
+                    }
+                } else { Vec::new() };
+                page.set(target_page);
+                if append { loading_more.set(true); } else { list.set(LoadState::Loading); }
+                let qs = format!("page={target_page}&page_size={page_size}");
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.list_alert_events_page_query(&qs).await {
                         Ok(p) => {
                             total.set(Some(p.total));
-                            list.set(LoadState::Loaded(p.items));
+                            let mut combined = existing;
+                            combined.extend(p.items);
+                            list.set(LoadState::Loaded(combined));
+                            loading_more.set(false);
                         }
-                        Err(e) => list.set(LoadState::Failed(e.user_facing())),
+                        Err(e) => {
+                            loading_more.set(false);
+                            if !append {
+                                list.set(LoadState::Failed(e.user_facing()));
+                            }
+                        }
                     }
                 });
             })
         };
-        {
-            let r = reload.clone();
-            let p = *page;
-            use_effect_with(p, move |_| { r.emit(()); || () });
-        }
-        let on_prev = {
-            let page = page.clone();
-            Callback::from(move |_: MouseEvent| { if *page > 1 { page.set(*page - 1); } })
+        let reload = {
+            let fetch = fetch.clone();
+            Callback::from(move |_: ()| { fetch.emit((1, false)); })
         };
-        let on_next = {
+        {
+            let fetch = fetch.clone();
+            use_effect_with((), move |_| { fetch.emit((1, false)); || () });
+        }
+        let on_more = {
+            let fetch = fetch.clone();
             let page = page.clone();
-            Callback::from(move |_: MouseEvent| { page.set(*page + 1); })
+            Callback::from(move |_: MouseEvent| { fetch.emit((*page + 1, true)); })
         };
 
         let ack = {
@@ -4346,10 +4435,11 @@ pub mod user {
                         },
                     ]
                 }).collect();
+                let loaded = rows.len() as u32;
                 html! { <>
                     <DataTable headers={headers} rows={trows} empty_label="No alert events yet."/>
-                    <ServerPager page={*page} page_size={page_size} total={*total}
-                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                    <LoadMore loaded={loaded} total={*total} loading={*loading_more}
+                              on_more={on_more.clone()} />
                 </> }
             }
         }
@@ -4386,12 +4476,14 @@ pub mod recruiter {
     fn candidates_body() -> Html {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let list = use_state(|| LoadState::<Vec<CandidateListItem>>::Loading);
-        // Server pagination (Audit #6 Issue #3): `page` is 1-based; each
-        // reload pushes `page=N&page_size=50` and re-fetches. `total`
-        // comes from the backend `X-Total-Count` response header.
+        // Server pagination (Audit #6 Issue #3) still drives the backend
+        // call shape (50 rows per request, `X-Total-Count` supplies `total`).
+        // Audit #11 Issue #4: rows accumulate across fetches and the user
+        // advances the list via "Load more" rather than Prev/Next.
         let page = use_state(|| 1u32);
         let page_size: u32 = 50;
         let total = use_state(|| Option::<u64>::None);
+        let loading_more = use_state(|| false);
 
         // Search / filter state. The querystring is rebuilt from these
         // fields each time the user submits the search form.
@@ -4421,8 +4513,7 @@ pub mod recruiter {
             let min_education = min_education.clone();
             let sort_by = sort_by.clone();
             let sort_dir = sort_dir.clone();
-            let page = page.clone();
-            move || -> String {
+            move |target_page: u32| -> String {
                 let mut parts: Vec<String> = Vec::new();
                 let push = |p: &mut Vec<String>, k: &str, v: &str| {
                     let v = v.trim();
@@ -4454,47 +4545,68 @@ pub mod recruiter {
                 // recruiter's pick.
                 push(&mut parts, "sort_by", &*sort_by);
                 push(&mut parts, "sort_dir", &*sort_dir);
-                parts.push(format!("page={}", *page));
+                parts.push(format!("page={target_page}"));
                 parts.push(format!("page_size={}", 50));
                 parts.join("&")
             }
         };
 
-        let reload = {
+        let fetch = {
             let auth = auth.clone();
             let list = list.clone();
             let total = total.clone();
+            let page = page.clone();
+            let loading_more = loading_more.clone();
             let build_query = build_query.clone();
-            Callback::from(move |_: ()| {
+            Callback::from(move |(target_page, append): (u32, bool)| {
                 let api = auth.api();
                 let list = list.clone();
                 let total = total.clone();
-                let qs = build_query();
-                list.set(LoadState::Loading);
+                let page = page.clone();
+                let loading_more = loading_more.clone();
+                let existing: Vec<CandidateListItem> = if append {
+                    match &*list {
+                        LoadState::Loaded(v) => v.clone(),
+                        _ => Vec::new(),
+                    }
+                } else { Vec::new() };
+                page.set(target_page);
+                if append { loading_more.set(true); } else { list.set(LoadState::Loading); }
+                let qs = build_query(target_page);
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.list_candidates_query_paged(&qs).await {
                         Ok((v, tot)) => {
                             total.set(tot);
-                            list.set(LoadState::Loaded(v));
+                            let mut combined = existing;
+                            combined.extend(v);
+                            list.set(LoadState::Loaded(combined));
+                            loading_more.set(false);
                         }
-                        Err(e) => list.set(LoadState::Failed(e.user_facing())),
+                        Err(e) => {
+                            loading_more.set(false);
+                            if !append {
+                                list.set(LoadState::Failed(e.user_facing()));
+                            }
+                        }
                     }
                 });
             })
         };
+        let reload = {
+            let fetch = fetch.clone();
+            Callback::from(move |_: ()| { fetch.emit((1, false)); })
+        };
         {
-            let r = reload.clone();
-            let p = *page;
-            use_effect_with(p, move |_| { r.emit(()); || () });
+            let fetch = fetch.clone();
+            use_effect_with((), move |_| { fetch.emit((1, false)); || () });
         }
 
         let on_submit = {
             let reload = reload.clone();
-            let page = page.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
-                // New search → reset to page 1 (this triggers the effect).
-                if *page != 1 { page.set(1); } else { reload.emit(()); }
+                // New search → reset accumulator to page 1.
+                reload.emit(());
             })
         };
         let on_clear = {
@@ -4508,7 +4620,6 @@ pub mod recruiter {
             let sort_by = sort_by.clone();
             let sort_dir = sort_dir.clone();
             let reload = reload.clone();
-            let page = page.clone();
             Callback::from(move |_: MouseEvent| {
                 q_text.set(String::new());
                 skills.set(String::new());
@@ -4521,20 +4632,13 @@ pub mod recruiter {
                 // "Clear" really clears every selectable search control.
                 sort_by.set("last_active_at".to_string());
                 sort_dir.set("desc".to_string());
-                if *page != 1 { page.set(1); } else { reload.emit(()); }
+                reload.emit(());
             })
         };
-        let on_prev = {
+        let on_more = {
+            let fetch = fetch.clone();
             let page = page.clone();
-            Callback::from(move |_: MouseEvent| {
-                if *page > 1 { page.set(*page - 1); }
-            })
-        };
-        let on_next = {
-            let page = page.clone();
-            Callback::from(move |_: MouseEvent| {
-                page.set(*page + 1);
-            })
+            Callback::from(move |_: MouseEvent| { fetch.emit((*page + 1, true)); })
         };
         let bind = |s: UseStateHandle<String>| {
             Callback::from(move |e: InputEvent| {
@@ -4668,9 +4772,10 @@ pub mod recruiter {
                         html! { { format!("{}%", c.completeness_score) } },
                     ]
                 }).collect();
+                let loaded = rows.len() as u32;
                 let pager = html! {
-                    <ServerPager page={*page} page_size={page_size} total={*total}
-                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                    <LoadMore loaded={loaded} total={*total} loading={*loading_more}
+                              on_more={on_more.clone()} />
                 };
                 html! { <>
                     <DataTable headers={headers} rows={trows}

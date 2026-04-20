@@ -685,3 +685,33 @@ Broad-gate `./run_tests.sh` rerun intentionally deferred per the standing "do no
 | 1 Decoder drift | Blocker | Frontend decoded `Vec<T>` where backend returned `Page<T>`; `create_product` decoded `ProductDetail` where backend returned `{id}`; import mutations decoded `ImportBatchSummary` where backend returned mini-envelopes | Split into `_page` + `Vec<T>` variants; re-typed mutation returns; added 3 new DTOs matching handler JSON shape | `cargo check -p terraops-frontend` clean |
 | 2 Fake perm codes | Blocker | UI referenced permission strings not seeded by `migrations/0002_rbac.sql`; `require_permission()` would always deny | Mapped every UI perm string to canonical vocabulary (`product.write`, `metric.read/configure`, `alert.ack/manage`, `report.schedule/run`) | 10 `PermGate` sites + nav conditions + gate2 tests aligned |
 | 3 Missing UI flows | High | Lineage, KPI drill, recruiter search, product governance, report schedule/download surfaces were either absent or placeholder | Built real components backed by real endpoints; added `/metrics/computations/:id/lineage` route; added binary-auth download helper | 5 new flow families live; all compile clean on wasm target |
+
+## Audit #11 Remediation (develop-1 lane)
+
+Four findings closed as a single coherent remediation bundle:
+
+| # | Severity | Finding | Fix |
+| - | -------- | ------- | --- |
+| 1 | High   | Signed image URLs not bound to authenticated user — any bearer holder could replay another user's URL within its exp. | HMAC input extended to `path | user_id | exp`; verifier rebuilds the HMAC against the authenticated session's user id; URL wire format unchanged (`?exp=&sig=`). |
+| 2 | High   | Service worker cached authenticated `/api/*` GETs keyed only by URL; no purge on logout. | SW bumped to `v2`; requests with `Authorization` header pass through uncached; `/api/*` tier removed entirely; logout posts `{type:'logout'}` which deletes image + legacy api caches. |
+| 3 | Medium | SPA rendered timestamps in UTC, bypassing `terraops_shared::time::format_display`. | `format_ts` now calls the shared helper with the browser's `Date.getTimezoneOffset()`-derived offset (sign inverted to match local-minus-UTC in seconds). |
+| 4 | Medium | Long lists used classic Prev/Next page navigation; design calls for incremental loading. | New `LoadMore` component; Products, Observations, Alert events, Candidates all accumulate rows and advance via "Load more"; backend per-call pagination unchanged; `ServerPager` removed. |
+
+### Audit #11 — file change list
+
+- `crates/backend/src/crypto/signed_url.rs` — HMAC now binds user id; added `wrong_user_rejected` unit test.
+- `crates/backend/src/products/repo.rs` — `get_product_detail` takes `viewer_user_id`.
+- `crates/backend/src/products/handlers.rs` — passes `user.0.user_id` to `get_product_detail`.
+- `crates/backend/src/products/images.rs` — passes `user.0.user_id` to `signed_url::verify`.
+- `crates/backend/tests/integration_tests.rs` — manual forgery test updated; new HTTP test `t_int_signed_image_url_rejects_cross_user_replay`.
+- `crates/frontend/static/sw.js` — v2, no auth-request caching, logout message handler.
+- `crates/frontend/src/components.rs` — `notify_sw_logout()`, Nav logout hook, `LoadMore`, `ServerPager` removed.
+- `crates/frontend/src/pages.rs` — `format_ts` routed through shared helper with local offset; 4 list surfaces converted to accumulate + `LoadMore`.
+- `README.md` — new "Audit #11 Remediation" section.
+
+### Audit #11 — issue → fix mapping evidence
+
+- Issue 1: `wrong_user_rejected` unit test + `t_int_signed_image_url_rejects_cross_user_replay` HTTP test (Alice's URL → 404 for Alice on unknown row; 403 for Bob on same URL).
+- Issue 2: `sw.js` — `isAuthenticatedRequest(req)` early-return, message handler; `components.rs` `notify_sw_logout()` called before `navigator.push(&Route::Login)`.
+- Issue 3: `pages.rs::format_ts` → `terraops_shared::time::format_display(dt, local_offset_seconds())`.
+- Issue 4: `components.rs::LoadMore`; `pages.rs` 4 sites use `fetch((target_page, append))` + accumulate; `ServerPager` definition removed.

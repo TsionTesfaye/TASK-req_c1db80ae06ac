@@ -6,6 +6,37 @@ use yew_router::prelude::*;
 use crate::router::Route;
 use crate::state::{AuthContext, NotificationsContext, Toast, ToastContext};
 
+/// Post `{type:'logout'}` to the active service worker so it drops any
+/// per-user caches before the next sign-in on this device.
+///
+/// Audit #11 Issue #2. Best-effort: if the SW is not installed, not yet
+/// controlling the page, or `postMessage` fails for any reason, we do
+/// nothing — the server-side session is already invalidated via the
+/// network logout call that ran immediately before this.
+fn notify_sw_logout() {
+    use wasm_bindgen::{JsCast, JsValue};
+    let Some(window) = web_sys::window() else { return };
+    let navigator: JsValue = window.navigator().into();
+    let Ok(sw_container) = js_sys::Reflect::get(&navigator, &JsValue::from_str("serviceWorker"))
+    else { return };
+    if sw_container.is_undefined() || sw_container.is_null() {
+        return;
+    }
+    let Ok(controller) = js_sys::Reflect::get(&sw_container, &JsValue::from_str("controller"))
+    else { return };
+    if controller.is_undefined() || controller.is_null() {
+        return;
+    }
+    let Ok(msg) = js_sys::JSON::parse("{\"type\":\"logout\"}") else { return };
+    let post = match js_sys::Reflect::get(&controller, &JsValue::from_str("postMessage")) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if let Ok(func) = post.dyn_into::<js_sys::Function>() {
+        let _ = func.call1(&controller, &msg);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Layout + Nav shell
 // ---------------------------------------------------------------------------
@@ -60,6 +91,12 @@ pub fn nav() -> Html {
             wasm_bindgen_futures::spawn_local(async move {
                 let _ = api.logout().await;
                 auth.set.emit(None);
+                // Audit #11 Issue #2: tell the service worker to drop any
+                // per-user caches (images, legacy API tier) before the
+                // next sign-in on this device. Best-effort — the SW may
+                // not be installed in dev or may not be controlling this
+                // page yet.
+                notify_sw_logout();
                 navigator.push(&Route::Login);
             });
         })
@@ -347,54 +384,63 @@ fn render_toast(t: &Toast, dismiss: Callback<u64>) -> Html {
     }
 }
 
+// Audit #6 Issue #3 introduced a server-side Prev/Next pager here.
+// Audit #11 Issue #4 superseded it: long lists now use `LoadMore` and
+// accumulate rows on the client, so the classic pager was removed.
+
 // ---------------------------------------------------------------------------
-// Server-side pager — Prev/Next + position readout for list surfaces that
-// request incremental pages from the backend (Audit #6 Issue #3).
+// LoadMore — incremental loading control (Audit #11 Issue #4)
 //
-// The owning body holds a `page: u32` state and a `page_size: u32` state
-// and refetches whenever either changes. This component only renders the
-// controls; all state mutation flows back through the supplied callbacks.
+// The prompt requires long lists (products, observations, alert events,
+// candidates) to be progressively loaded rather than flipped through with
+// classic page navigation. The owning body accumulates rows across
+// fetches; this component renders:
+//   * a subtle progress label (`N of M loaded` or `N loaded`),
+//   * a "Load more" button when more rows remain and a network call is
+//     not already in flight,
+//   * a disabled spinner-style button while a fetch is in flight.
+//
+// It does not own pagination state — the parent component still holds
+// `page` and bumps it when `on_more` fires, and appends the resulting
+// batch to its accumulated list.
 // ---------------------------------------------------------------------------
 
 #[derive(Properties, PartialEq)]
-pub struct ServerPagerProps {
-    /// 1-based current page.
-    pub page: u32,
-    pub page_size: u32,
-    /// `None` when the backend did not report a total (e.g. missing
-    /// `X-Total-Count` header). In that case we still render Next on the
-    /// assumption that more rows may exist; Prev is gated by `page > 1`.
+pub struct LoadMoreProps {
+    /// Number of rows the viewer already sees.
+    pub loaded: u32,
+    /// `Some(total)` when the backend reported an authoritative total.
+    /// `None` hides the `of M` suffix and still allows "Load more" on
+    /// the assumption that another page may be available.
     #[prop_or_default]
     pub total: Option<u64>,
-    pub on_prev: Callback<MouseEvent>,
-    pub on_next: Callback<MouseEvent>,
+    /// `true` while the next batch is being fetched.
+    #[prop_or(false)]
+    pub loading: bool,
+    pub on_more: Callback<MouseEvent>,
 }
 
-#[function_component(ServerPager)]
-pub fn server_pager(props: &ServerPagerProps) -> Html {
-    let page = props.page.max(1);
-    let page_size = props.page_size.max(1) as u64;
+#[function_component(LoadMore)]
+pub fn load_more(props: &LoadMoreProps) -> Html {
+    let loaded_u64 = props.loaded as u64;
     let (label, at_end) = match props.total {
-        Some(total) => {
-            let last_page = ((total + page_size - 1) / page_size).max(1) as u32;
-            let start = ((page as u64 - 1) * page_size + 1).min(total.max(1));
-            let end = ((page as u64) * page_size).min(total);
-            (
-                format!("{}–{} of {} (page {}/{})", start, end, total, page, last_page),
-                page >= last_page,
-            )
-        }
-        None => (format!("Page {}", page), false),
+        Some(total) => (
+            format!("{} of {} loaded", loaded_u64.min(total), total),
+            loaded_u64 >= total,
+        ),
+        None => (format!("{} loaded", loaded_u64), false),
     };
+    let show_button = !at_end;
     html! {
-        <div class="tx-pager">
-            <button class="tx-btn tx-btn--ghost" onclick={props.on_prev.clone()} disabled={page <= 1}>
-                { "Prev" }
-            </button>
+        <div class="tx-pager" role="status" aria-live="polite">
             <span class="tx-subtle">{ label }</span>
-            <button class="tx-btn tx-btn--ghost" onclick={props.on_next.clone()} disabled={at_end}>
-                { "Next" }
-            </button>
+            if show_button {
+                <button class="tx-btn tx-btn--ghost"
+                        onclick={props.on_more.clone()}
+                        disabled={props.loading}>
+                    { if props.loading { "Loading…" } else { "Load more" } }
+                </button>
+            }
         </div>
     }
 }

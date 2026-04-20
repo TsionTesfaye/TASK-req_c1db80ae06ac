@@ -167,7 +167,7 @@ pub async fn serve_image(
         _ => return Err(AppError::Forbidden("missing signed URL parameters")),
     };
 
-    signed_url::verify(&api_path, exp, &sig, &state.keys.image_hmac)
+    signed_url::verify(&api_path, user.0.user_id, exp, &sig, &state.keys.image_hmac)
         .map_err(|_| AppError::Forbidden("invalid or expired signed URL"))?;
 
     // Look up the image row

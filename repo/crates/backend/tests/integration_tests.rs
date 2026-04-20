@@ -756,7 +756,7 @@ async fn t_int_allowlist_blocks_unpinned_ip() {
 #[actix_web::test]
 async fn t_int_signed_image_url_rejects_forged_and_expired() {
     let ctx = TestCtx::new().await;
-    let (_admin, token) = authed(
+    let (admin_uid, token) = authed(
         &ctx.pool,
         &ctx.keys,
         "signed-url-admin@example.com",
@@ -799,6 +799,8 @@ async fn t_int_signed_image_url_rejects_forged_and_expired() {
     let mut mac = <H as Mac>::new_from_slice(key).unwrap();
     mac.update(api_path.as_bytes());
     mac.update(b"|");
+    mac.update(admin_uid.hyphenated().to_string().as_bytes());
+    mac.update(b"|");
     mac.update(past_exp.to_string().as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
     let expired = format!("{api_path}?exp={past_exp}&sig={sig}");
@@ -811,13 +813,63 @@ async fn t_int_signed_image_url_rejects_forged_and_expired() {
 
     // (d) valid sig but unknown image id → 404 (proves verify path accepted
     //     the signature, then the row lookup failed)
-    let qs = signed_url::sign(&api_path, 300, key);
+    let qs = signed_url::sign(&api_path, admin_uid, 300, key);
     let req = test::TestRequest::get()
         .uri(&format!("{api_path}?{qs}"))
         .insert_header(("Authorization", format!("Bearer {token}")))
         .to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "valid sig, missing row");
+}
+
+// Audit #11 issue #1: a signed image URL minted for user A must not be
+// accepted when replayed by another authenticated user B, even within the
+// URL's exp window. The HMAC binds to the authenticated caller's user id.
+#[actix_web::test]
+async fn t_int_signed_image_url_rejects_cross_user_replay() {
+    let ctx = TestCtx::new().await;
+    let (alice_uid, alice_token) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "signed-url-alice@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+    let (_bob_uid, bob_token) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "signed-url-bob@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+
+    let img_id = Uuid::new_v4();
+    let api_path = format!("/api/v1/images/{img_id}");
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+
+    // Alice mints a URL for herself.
+    let qs = signed_url::sign(&api_path, alice_uid, 300, &ctx.keys.image_hmac);
+
+    // Alice's own usage: signature passes; image row is missing → 404 (proves
+    // the verifier accepted the signature before row lookup).
+    let req = test::TestRequest::get()
+        .uri(&format!("{api_path}?{qs}"))
+        .insert_header(("Authorization", format!("Bearer {alice_token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "alice's own URL verifies");
+
+    // Bob replays Alice's URL within its exp window → 403.
+    let req = test::TestRequest::get()
+        .uri(&format!("{api_path}?{qs}"))
+        .insert_header(("Authorization", format!("Bearer {bob_token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "bob cannot replay alice's signed URL"
+    );
 }
 
 // ── HARDENING: log / error-envelope redaction ────────────────────────────────

@@ -189,7 +189,7 @@ async fn get_product(
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "product.read")?;
     let id = path.into_inner();
-    let detail = repo::get_product_detail(&state.pool, id, &state.keys.image_hmac)
+    let detail = repo::get_product_detail(&state.pool, id, user.0.user_id, &state.keys.image_hmac)
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(HttpResponse::Ok().json(detail))

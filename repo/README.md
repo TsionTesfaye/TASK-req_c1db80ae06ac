@@ -591,3 +591,65 @@ findings:
   `crates/backend/src/crypto/email.rs` clarifies that the email
   hash is used for admin lookup/uniqueness, not for login.
 
+## Audit #11 Remediation — signed-URL user binding, SW cache isolation, local-TZ display, incremental loading
+
+The `develop-1` audit-#11 remediation bundle closes four findings:
+
+- **Signed image URLs bound to the authenticated user (High).**
+  `GET /api/v1/images/{id}?exp=..&sig=..` previously authenticated the
+  signature over `path | exp` only, so a URL minted for user A could be
+  replayed by any other authenticated user B inside the 10-minute `exp`
+  window. The HMAC input now includes the authenticated caller's user
+  id (`HMAC(key, path | user_id | exp)`), computed server-side from the
+  session — the user id is still never placed in the URL text, so
+  nothing identifying leaks in logs or referers. The verifier recomputes
+  the HMAC against the actual bearer-holder on serve; a URL signed for
+  A returns 403 when requested by B. Unit coverage:
+  `wrong_user_rejected` in `crates/backend/src/crypto/signed_url.rs`;
+  HTTP coverage: `t_int_signed_image_url_rejects_cross_user_replay` in
+  `crates/backend/tests/integration_tests.rs` (Alice mints, Alice sees
+  404 for an unknown row, Bob replaying Alice's exact URL sees 403).
+  (`crates/backend/src/crypto/signed_url.rs`,
+  `crates/backend/src/products/repo.rs`,
+  `crates/backend/src/products/handlers.rs`,
+  `crates/backend/src/products/images.rs`.)
+- **Service worker no longer caches authenticated traffic (High).** The
+  Audit #7 SW shipped a network-first `/api/*` tier and an image tier
+  keyed only by URL, which could expose a previous signed-in user's
+  cached responses to the next user on a shared device. The SW is
+  bumped to `terraops-v2` and now: (a) passes every request with an
+  `Authorization` header straight through without caching, (b) never
+  writes to an `/api/*` cache regardless of header presence, (c) leaves
+  only the unauthenticated static app-shell and unauthenticated image
+  tier cacheable, and (d) accepts a `{type:'logout'}` message that
+  deletes the image + api caches. The SPA posts that message from the
+  Nav logout callback immediately before redirecting to `/login`, so a
+  subsequent sign-in on the same device does not see the prior
+  account's fetched images.
+  (`crates/frontend/static/sw.js`,
+  `crates/frontend/src/components.rs`.)
+- **Timestamps render in the browser's local timezone (Medium).**
+  `format_ts` in `crates/frontend/src/pages.rs` previously formatted
+  UTC directly, which drifted from the design contract that "display
+  uses `MM/DD/YYYY hh:mm AM/PM` in the user's local timezone" and from
+  the centralized helper `terraops_shared::time::format_display`. It
+  now calls that shared helper, supplying the offset-from-UTC in
+  seconds derived from `js_sys::Date::new_0().get_timezone_offset()`
+  (ECMAScript returns minutes-west-of-UTC, so the sign is inverted).
+  One code path, one display contract, browser-local values on every
+  page.
+  (`crates/frontend/src/pages.rs`,
+  `crates/shared/src/time.rs` — unchanged helper reused.)
+- **Incremental loading instead of Prev/Next pagination (Medium).**
+  The Audit #6 server-paginated Prev/Next pager has been replaced by a
+  "Load more" control across the four long-list surfaces (Products,
+  Observations, Alert events, Candidates). Rows accumulate on the
+  client across fetches; the backend still receives
+  `page=N&page_size=50` per call so server paging is unchanged, only
+  the UX of advancing through the list changes. A new `LoadMore`
+  component renders `N loaded` or `N of M loaded` plus a "Load more"
+  button that disables when the total is reached or while a fetch is
+  in flight. `ServerPager` has been removed.
+  (`crates/frontend/src/components.rs`,
+  `crates/frontend/src/pages.rs`.)
+

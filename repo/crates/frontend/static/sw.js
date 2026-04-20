@@ -1,5 +1,5 @@
 // TerraOps service worker — tiered offline cache for static resources and
-// images (Audit #7 Issue #3).
+// images (Audit #7 Issue #3, hardened by Audit #11 Issue #2).
 //
 // Tiers:
 //   1. "static"  — cache-first with version pin. App shell assets (the Yew
@@ -9,14 +9,28 @@
 //      anything else fetched from /api/v1/products/*/image or /static/*.svg
 //      beyond the app shell. Cached copies keep the UI usable offline while
 //      a background fetch refreshes them when the network is reachable.
-//   3. "api"     — network-first. All /api/v1/* calls hit the network and
-//      fall back to cache only if we already have a stored copy. This keeps
-//      data fresh while preserving a read-only offline experience.
 //
 // Non-GET requests are never cached and always go straight to the network,
 // so mutations (POST/PUT/PATCH/DELETE) behave exactly as before.
+//
+// Audit #11 Issue #2 — authenticated-response isolation:
+//   * Any request that carries an `Authorization` header (i.e. per-user
+//     bearer-authenticated traffic) is passed through directly and never
+//     cached. This is true for `/api/*` and for authenticated image
+//     fetches alike. The previous "api" network-first tier cached
+//     responses keyed only by URL, which would allow one logged-in user
+//     to read another user's cached response on a shared device. That
+//     tier has been removed.
+//   * The image cache only stores public / unauthenticated GETs. Signed
+//     `/api/v1/images/{id}?exp=..&sig=..` requests carry the caller's
+//     bearer token and are therefore never cached here either.
+//   * On logout the app posts `{type:'logout'}` to the active SW, which
+//     purges the image cache so no previously fetched user data remains
+//     on the device for the next account that signs in.
 
-const VERSION = 'terraops-v1';
+// Bumped to v2 (Audit #11 Issue #2). The old `v1-api` cache is dropped
+// on activate by the existing prefix-based purge below.
+const VERSION = 'terraops-v2';
 const STATIC_CACHE = `${VERSION}-static`;
 const IMAGE_CACHE = `${VERSION}-images`;
 const API_CACHE = `${VERSION}-api`;
@@ -100,16 +114,14 @@ async function staleWhileRevalidate(cacheName, req) {
   return cached || networkPromise;
 }
 
-async function networkFirst(cacheName, req) {
-  const cache = await caches.open(cacheName);
+// A request is treated as authenticated if it carries any Authorization
+// header. Such responses are user-scoped and must never be written to a
+// shared cache keyed only by URL.
+function isAuthenticatedRequest(req) {
   try {
-    const res = await fetch(req);
-    if (res && res.ok) cache.put(req, res.clone());
-    return res;
-  } catch (err) {
-    const cached = await cache.match(req);
-    if (cached) return cached;
-    throw err;
+    return req.headers && req.headers.has('Authorization');
+  } catch (_e) {
+    return false;
   }
 }
 
@@ -120,6 +132,16 @@ self.addEventListener('fetch', (event) => {
   // Only handle same-origin traffic; anything external is left alone.
   if (url.origin !== self.location.origin) return;
 
+  // Never cache or short-circuit authenticated traffic — pass it straight
+  // through so every read is re-authorized by the server per caller.
+  if (isAuthenticatedRequest(req)) return;
+
+  // API traffic without an Authorization header is either a public
+  // endpoint (e.g. /api/v1/healthz) or a pre-auth probe; we still do not
+  // cache /api/* responses to avoid any accidental cross-session reuse
+  // if an app path ever omits the header.
+  if (isApiRequest(url)) return;
+
   if (isStaticShellRequest(url)) {
     event.respondWith(cacheFirst(STATIC_CACHE, req));
     return;
@@ -128,8 +150,20 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(staleWhileRevalidate(IMAGE_CACHE, req));
     return;
   }
-  if (isApiRequest(url)) {
-    event.respondWith(networkFirst(API_CACHE, req));
-    return;
+});
+
+// Audit #11 Issue #2: the app posts `{type:'logout'}` on sign-out so we
+// can drop any user-scoped caches before the next user signs in on the
+// same device. Static shell cache is kept because it is not user-scoped.
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'logout') {
+    event.waitUntil(
+      Promise.all([
+        caches.delete(IMAGE_CACHE),
+        caches.delete(API_CACHE),
+      ]),
+    );
   }
 });

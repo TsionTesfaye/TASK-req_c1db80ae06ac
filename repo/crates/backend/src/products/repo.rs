@@ -178,6 +178,7 @@ pub async fn get_product_by_id(pool: &PgPool, id: Uuid) -> AppResult<Option<Prod
 pub async fn get_product_detail(
     pool: &PgPool,
     id: Uuid,
+    viewer_user_id: Uuid,
     image_hmac_key: &[u8; 32],
 ) -> AppResult<Option<ProductDetail>> {
     let row = match get_product_by_id(pool, id).await? {
@@ -278,7 +279,7 @@ pub async fn get_product_detail(
         .into_iter()
         .map(|img| {
             let path = format!("/api/v1/images/{}", img.id);
-            let qs = crate::crypto::signed_url::sign(&path, 600, image_hmac_key);
+            let qs = crate::crypto::signed_url::sign(&path, viewer_user_id, 600, image_hmac_key);
             let signed_url = format!("{path}?{qs}");
             ProductImageDto {
                 id: img.id,
