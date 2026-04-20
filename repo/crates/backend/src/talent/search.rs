@@ -27,7 +27,32 @@ pub struct CandidateQuery {
     pub page: Option<u32>,
     /// Page size (defaults to 50, max 200).
     pub page_size: Option<u32>,
+    /// Audit #10 issue #3: user-selectable sort column. Whitelisted to
+    /// `last_active_at | created_at | updated_at | full_name |
+    /// years_experience | completeness_score`. Handler rejects unknown
+    /// values with 400 so a bogus value does not silently fall back.
+    pub sort_by: Option<String>,
+    /// `asc|desc`. Default: `desc` (most recent / highest first, matching
+    /// the pre-audit implicit ORDER BY last_active_at DESC).
+    pub sort_dir: Option<String>,
 }
+
+/// Whitelisted candidate sort columns (audit #10 issue #3). The handler
+/// validates against this set before passing the value down to
+/// `candidates::list`, and `build_list_query` uses it to emit a
+/// hard-coded ORDER BY clause — no untrusted identifier is ever
+/// interpolated directly into SQL.
+pub const CANDIDATE_SORT_COLUMNS: &[&str] = &[
+    "last_active_at",
+    "created_at",
+    "updated_at",
+    "full_name",
+    "years_experience",
+    "completeness_score",
+];
+
+/// Valid sort-direction tokens for candidate search.
+pub const CANDIDATE_SORT_DIRS: &[&str] = &["asc", "desc"];
 
 impl CandidateQuery {
     /// Resolve pagination defaults.

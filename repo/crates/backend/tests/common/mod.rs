@@ -226,6 +226,21 @@ pub async fn create_user_with_roles(
     row.0
 }
 
+/// Fetch the DB-assigned `username` for a user created by
+/// `create_user_with_roles`. The harness generates a random-suffixed
+/// username per user (see audit #4 issue #4); tests that call
+/// `/auth/login` must POST this exact value as `{username}` because the
+/// login contract is username-only with **no** email fallback
+/// (audit #10 issue #2).
+pub async fn username_for(pool: &PgPool, user_id: Uuid) -> String {
+    let (uname,): (String,) = sqlx::query_as("SELECT username FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("fetch username for test user");
+    uname
+}
+
 /// Insert a live `sessions` row + mint a matching HS256 access token.
 pub async fn issue_session_for(
     pool: &PgPool,

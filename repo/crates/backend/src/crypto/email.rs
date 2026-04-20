@@ -5,10 +5,11 @@
 //!   * `email_hash` — HMAC-SHA256(normalized email) for uniqueness + lookup.
 //!   * `email_mask` — user-safe display string, e.g. `j***@e***.com`.
 //!
-//! We never store plaintext email. Login/lookup compares HMACs in constant
-//! time; display surfaces show the mask unless the caller has
-//! `user.manage` (and even then the decrypted email is fetched per request,
-//! never cached).
+//! We never store plaintext email. Login is **username-first** (see
+//! `handlers::auth` A1); the email hash is used for admin-side lookup
+//! and uniqueness, not for sign-in. Display surfaces show the mask
+//! unless the caller has `user.manage` (and even then the decrypted
+//! email is fetched per request, never cached).
 
 use aes_gcm::{
     aead::{Aead, KeyInit},

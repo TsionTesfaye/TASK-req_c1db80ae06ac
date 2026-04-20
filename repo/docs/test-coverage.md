@@ -239,6 +239,77 @@ every row whose first column is `FVM-*`.
 - **Playwright flow verification: 7 rows.**
 - **Router static enumeration: 3 rows.**
 
+## Endpoint Audit Rules (Gate 3)
+
+`scripts/audit_endpoints.sh` is the repo-enforced parity gate between
+the real mounted Actix-web router and the inventory in
+`docs/api-spec.md`. It runs three checks on every `run_tests.sh`.
+
+1. **Reverse ID parity (always enforced).** Every `t_<id>_*` integration
+   test fn in `crates/backend/tests/**/*.rs` must reference an ID that
+   appears in the `## Endpoint Inventory` tables of `docs/api-spec.md`.
+2. **Forward ID parity (strict mode only — marker file
+   `crates/backend/tests/.audit_strict` exists).** Every authoritative ID
+   in the inventory must have at least one matching `t_<id>_*` test fn.
+3. **Method+path parity (always enforced, audit #10 issue #1).** The
+   `(METHOD, PATH)` set derived from `api-spec.md` inventory rows must
+   equal the `(METHOD, PATH)` set mounted by the backend router. Drift
+   in either direction — a route documented but not mounted, or mounted
+   but not documented — is a HARD failure. This is the check that
+   catches "spec lies about what is mounted" the way ID-only parity
+   cannot.
+
+Parser contracts:
+
+| Input | Regex / shape |
+|---|---|
+| Inventory ID | `^[A-Z]{1,5}[0-9]+$` |
+| Inventory row | `\| <ID> \| <METHOD> \| ` + backticked `<path>` + ` \| <auth> \| <notes> \|` |
+| Test fn | `\bfn[[:space:]]+t_([A-Za-z]{1,5}[0-9]+)_[A-Za-z0-9_]*[[:space:]]*\(` (case-insensitive; captured ID is upper-cased before comparison) |
+| Router single-line | `.route("<p>", web::<m>().to(...))` inside a `web::scope("/<scope>")` block or bare `cfg.route("<p>", web::<m>().to(...))` |
+| Router multi-line | `.route(` on one line, then the path literal, then `web::<m>().to(...),`, then `),` — the script assembles the tuple across lines |
+| Mounted path | `/api/v1` + scope + relative — the app-level `web::scope("/api/v1")` is not a feature family and is skipped |
+
+The authoritative endpoint total is a single declarative sentence
+`**N HTTP endpoints.**` inside the `## Totals` section of
+`docs/api-spec.md`. The script reads that sentence directly; it does
+not derive the total from heuristics over table rows.
+
+## Endpoint-to-Test Map
+
+Every row in `docs/api-spec.md §Endpoint Inventory` has at least one
+`t_<id>_*` test function. The table below is human-navigable; the
+mechanical proof lives in `scripts/audit_endpoints.sh`.
+
+| ID | Test fn (first match) | Location |
+|---|---|---|
+| S1 | `t_s1_health_is_public_and_ok` | `crates/backend/tests/http_p1.rs` |
+| S2 | `t_s2_ready_is_public_and_ok` | `crates/backend/tests/http_p1.rs` |
+| A1 | `t_a1_login_success_sets_refresh_cookie` + `t_a1_login_rejects_email_as_username` | `crates/backend/tests/http_p1.rs` |
+| A2 | `t_a2_refresh_rotates_and_revokes_old_session` | `crates/backend/tests/http_p1.rs` |
+| A3 | `t_a3_logout_revokes_current_session` | `crates/backend/tests/http_p1.rs` |
+| A4 | `t_a4_me_returns_caller_profile` | `crates/backend/tests/http_p1.rs` |
+| A5 | `t_a5_change_password_requires_current_and_rotates_hash` | `crates/backend/tests/http_p1.rs` |
+| U1–U10 | `t_u1_..` through `t_u10_..` | `crates/backend/tests/http_p1.rs` |
+| SEC1–SEC9 | `t_sec1_..` through `t_sec9_..` | `crates/backend/tests/http_p1.rs` |
+| R1–R3 | `t_r1_..` through `t_r3_..` | `crates/backend/tests/http_p1.rs` |
+| M1–M4 | `t_m1_..` through `t_m4_..` | `crates/backend/tests/http_p1.rs` |
+| REF1–REF9 | `t_ref1_..` through `t_ref9_..` | `crates/backend/tests/http_p1.rs` |
+| N1–N9 | `t_n1_..` through `t_n9_..` (N8/N9 added audit #10 issue #1) | `crates/backend/tests/http_p1.rs` |
+| P1–P14 | `t_p1_..` through `t_p14_..` | `crates/backend/tests/http_products_*.rs` |
+| I1–I7 | `t_i1_..` through `t_i7_..` | `crates/backend/tests/http_imports_tests.rs` |
+| E1–E6 | `t_e1_..` through `t_e6_..` | `crates/backend/tests/metrics_env_tests.rs` |
+| MD1–MD7 | `t_md1_..` through `t_md7_..` | `crates/backend/tests/metrics_def_tests.rs` |
+| K1–K6 | `t_k1_..` through `t_k6_..` | `crates/backend/tests/kpi_tests.rs` |
+| AL1–AL6 | `t_al1_..` through `t_al6_..` | `crates/backend/tests/alerts_tests.rs` |
+| RP1–RP6 | `t_rp1_..` through `t_rp6_..` | `crates/backend/tests/reports_tests.rs` |
+| T1–T13 | `t_t1_..` through `t_t13_..` | `crates/backend/tests/talent_*.rs` |
+| T14 | `t_t14_list_items_owner_scoped` + `t_t14_list_items_forbidden_for_other_user` (added audit #10 issue #1) | `crates/backend/tests/talent_watchlist_tests.rs` |
+
+Exact fn names may drift; the audit script never compares names beyond
+the `t_<id>_` prefix regex above. The columns are maintained for human
+reviewers who want to open the right file quickly.
+
 ## Limitations (explicit, honest)
 
 1. Gate 2 does not measure statement-level line coverage of wasm

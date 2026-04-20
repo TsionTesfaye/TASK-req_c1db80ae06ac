@@ -951,19 +951,44 @@ impl ApiClient {
         min_years: Option<i32>,
         skills_csv: Option<&str>,
     ) -> Result<Vec<RoleOpenItem>, ApiError> {
+        self.search_talent_roles_ext(
+            q, status, min_years, skills_csv, None, None, None, None, None,
+        )
+        .await
+    }
+    /// Audit #8 Issue #4: extended role search with the prompt-required
+    /// role attributes (major / education / availability) plus whitelisted
+    /// sort column / direction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_talent_roles_ext(
+        &self,
+        q: Option<&str>,
+        status: Option<&str>,
+        min_years: Option<i32>,
+        skills_csv: Option<&str>,
+        required_major: Option<&str>,
+        min_education: Option<&str>,
+        required_availability: Option<&str>,
+        sort_by: Option<&str>,
+        sort_dir: Option<&str>,
+    ) -> Result<Vec<RoleOpenItem>, ApiError> {
         let mut parts: Vec<String> = Vec::new();
-        if let Some(v) = q.map(str::trim).filter(|s| !s.is_empty()) {
-            parts.push(format!("q={}", urlencode(v)));
-        }
-        if let Some(v) = status.map(str::trim).filter(|s| !s.is_empty()) {
-            parts.push(format!("status={}", urlencode(v)));
-        }
+        let push_str = |parts: &mut Vec<String>, k: &str, v: Option<&str>| {
+            if let Some(v) = v.map(str::trim).filter(|s| !s.is_empty()) {
+                parts.push(format!("{}={}", k, urlencode(v)));
+            }
+        };
+        push_str(&mut parts, "q", q);
+        push_str(&mut parts, "status", status);
         if let Some(y) = min_years {
             parts.push(format!("min_years={y}"));
         }
-        if let Some(v) = skills_csv.map(str::trim).filter(|s| !s.is_empty()) {
-            parts.push(format!("skills={}", urlencode(v)));
-        }
+        push_str(&mut parts, "skills", skills_csv);
+        push_str(&mut parts, "required_major", required_major);
+        push_str(&mut parts, "min_education", min_education);
+        push_str(&mut parts, "required_availability", required_availability);
+        push_str(&mut parts, "sort_by", sort_by);
+        push_str(&mut parts, "sort_dir", sort_dir);
         let path = if parts.is_empty() {
             "/talent/roles".to_string()
         } else {

@@ -1,51 +1,62 @@
 #!/usr/bin/env bash
 # audit_endpoints.sh — Gate 3: endpoint parity audit.
 #
-# Authoritative total is read from the single declarative sentence
-# `**N HTTP endpoints.**` inside the `## Totals` section of
-# `docs/api-spec.md`. That sentence is the accepted planning contract and
-# drives every number the artifact reports, including forward parity
-# denominators. The parser never manufactures its own total from table-row
-# heuristics.
+# This script enforces three parity contracts between the spec file
+# `docs/api-spec.md` and the actual mounted Actix-web routes in
+# `crates/backend/src/**/*.rs`.
 #
-# Additional checks:
-#   * reverse parity : every `t_<id>_*` test references an ID that exists in
-#                      the inventory tables (always enforced).
-#   * forward parity : every authoritative ID has at least one `t_<id>_*`
-#                      test (enforced only in strict mode, i.e. when the
-#                      marker file `crates/backend/tests/.audit_strict`
-#                      exists).
+#   1. Reverse ID parity (always enforced):
+#        every `t_<id>_*` test fn references an ID that appears in the
+#        `## Endpoint Inventory` tables of api-spec.md.
 #
-# Parser contract (per docs/test-coverage.md §Endpoint Audit Rules):
-#   - ID regex  : ^[A-Z]{1,5}[0-9]+$
-#   - fn  regex : \bfn[[:space:]]+t_([A-Za-z]{1,5}[0-9]+)_[A-Za-z0-9_]*[[:space:]]*\(
-#                 (test fn names use lowercase prefixes — e.g. `t_sec3_…`
-#                 for SEC3 — so the captured ID is uppercased before the
-#                 inventory comparison)
+#   2. Forward ID parity (strict mode only — marker file
+#      `crates/backend/tests/.audit_strict` exists):
+#        every authoritative ID in api-spec.md has at least one
+#        `t_<id>_*` test fn.
+#
+#   3. Method+path parity (audit #10 issue #1, always enforced):
+#        the (METHOD, PATH) set derived from api-spec.md inventory rows
+#        matches the (METHOD, PATH) set mounted by the backend router.
+#        Drift in either direction is a failure — this is what catches
+#        "spec lies about what is mounted" and "mounted route nobody
+#        documented" the way pure ID checks cannot.
+#
+# Parser contracts (per docs/test-coverage.md §Endpoint Audit Rules):
+#   - ID regex      : ^[A-Z]{1,5}[0-9]+$
+#   - test fn regex : \bfn[[:space:]]+t_([A-Za-z]{1,5}[0-9]+)_[A-Za-z0-9_]*[[:space:]]*\(
+#                     (test fn names use lowercase prefixes — e.g. `t_sec3_…`
+#                     for SEC3 — so the captured ID is uppercased before the
+#                     inventory comparison)
+#   - spec row      : `| <ID> | <METHOD> | \`<path>\` | <auth> | <notes> |`
+#   - route line    : `.route("<relative-path>", web::<method>().to(...))`
+#                     prefixed with the enclosing `web::scope("/<prefix>")`
+#                     and the fixed `/api/v1` app-level scope.
+#
+# Authoritative endpoint total is the single declarative sentence
+# `**N HTTP endpoints.**` inside the `## Totals` section of api-spec.md.
 #
 # Exit codes:
-#   0 — pass (progress: reverse green; strict: reverse + forward green)
-#   1 — audit failure
+#   0 — pass
+#   1 — audit failure (method+path drift, reverse orphans, or
+#       strict-mode forward miss)
 #   2 — internal error (missing inputs)
 
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
 SPEC_FILE="${SPEC_FILE:-${REPO_ROOT}/docs/api-spec.md}"
-# Scan the full backend tests tree. P1 collapses every HTTP test into
-# `tests/http_p1.rs`; P-A/P-B/P-C will split tests back out into files
-# under `tests/http/**`. Both layouts are valid inputs to this parity
-# check — the audit does not care which file a `t_<id>_*` function lives
-# in, only that every ID it references maps to the authoritative
-# inventory and (in strict mode) that every authoritative ID has at
-# least one test.
 TESTS_DIR="${REPO_ROOT}/crates/backend/tests"
+HANDLERS_DIR="${REPO_ROOT}/crates/backend/src"
 MARKER="${REPO_ROOT}/crates/backend/tests/.audit_strict"
 OUT_DIR="${REPO_ROOT}/coverage"
 OUT_JSON="${OUT_DIR}/endpoint_audit.json"
 
 if [[ ! -f "${SPEC_FILE}" ]]; then
     echo "audit_endpoints: cannot find api-spec.md at ${SPEC_FILE}" >&2
+    exit 2
+fi
+if [[ ! -d "${HANDLERS_DIR}" ]]; then
+    echo "audit_endpoints: cannot find backend src at ${HANDLERS_DIR}" >&2
     exit 2
 fi
 
@@ -68,28 +79,165 @@ if [[ -z "${declared_total}" ]]; then
     exit 2
 fi
 
-# ---- Inventory IDs (reverse-check basis only) ----
-# These are the identifiers any `t_<id>_*` test function is allowed to
-# reference. We DO NOT derive the endpoint total from this set; the
-# authoritative total is the declared `## Totals` sentence above.
-inventory_ids=$(awk '
+# ---- Inventory IDs + spec (method, path) tuples --------------------------
+# We parse every row in `## Endpoint Inventory` that looks like:
+#     | <ID> | <METHOD> | `<path>` | <auth> | <notes> |
+# and emit two artifacts:
+#   * inventory_ids   — one uppercase ID per line
+#   * spec_pairs      — "<METHOD> <path>" one per line, uppercase METHOD,
+#                       path exactly as written inside the backticks
+INVENTORY_AWK='
     BEGIN { in_inv = 0 }
     /^## / {
         if ($0 ~ /^## Endpoint Inventory[[:space:]]*$/) { in_inv = 1; next }
         else if (in_inv == 1) { in_inv = 0 }
     }
     in_inv == 1 && /^\|/ {
-        line = $0
-        sub(/^\|[[:space:]]*/, "", line)
-        n = index(line, "|")
-        if (n == 0) next
-        cell = substr(line, 1, n - 1)
-        gsub(/[[:space:]]/, "", cell)
-        if (cell ~ /^[A-Z]{1,5}[0-9]+$/) print cell
+        # split on "|" and trim each cell
+        n = split($0, cells, "|")
+        # cells[1] is empty (leading |), cells[2]=id, cells[3]=method,
+        # cells[4]=path (backticked), cells[5]=auth, cells[6]=notes
+        if (n < 5) next
+        id = cells[2]; gsub(/[[:space:]]/, "", id)
+        meth = cells[3]; gsub(/[[:space:]]/, "", meth)
+        path_cell = cells[4]
+        gsub(/`/, "", path_cell)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", path_cell)
+        if (id !~ /^[A-Z]{1,5}[0-9]+$/) next
+        if (meth !~ /^(GET|POST|PUT|PATCH|DELETE)$/) next
+        if (path_cell !~ /^\/api\/v1\//) next
+        printf "ID\t%s\n", id
+        printf "PAIR\t%s %s\n", meth, path_cell
     }
-' "${SPEC_FILE}" | sort -u)
+'
 
-# ---- Covered IDs from tests/http ----
+spec_stream=$(awk "${INVENTORY_AWK}" "${SPEC_FILE}")
+inventory_ids=$(printf '%s\n' "${spec_stream}" | awk -F'\t' '$1=="ID"{print $2}' | sort -u)
+spec_pairs=$(printf '%s\n' "${spec_stream}" | awk -F'\t' '$1=="PAIR"{print $2}' | sort -u)
+
+inventory_count=$(printf '%s\n' "${inventory_ids}" | grep -c . || true)
+spec_pair_count=$(printf '%s\n' "${spec_pairs}"   | grep -c . || true)
+
+# ---- Derive (METHOD, PATH) from the backend router ------------------------
+# Strategy:
+#   * Start at the app-level scope `/api/v1` (hard-coded — there is exactly
+#     one such scope in app.rs, see `web::scope("/api/v1")`).
+#   * Walk every handler source file that calls `cfg.service(web::scope(...))`
+#     or `cfg.route(...)` directly.
+#   * For each file, run a small awk state machine:
+#       - when we see `web::scope("<prefix>")` record the active prefix
+#         until the enclosing service block closes with ");".
+#       - when we see `.route("<p>", web::<m>().to(...))` emit
+#         (METHOD, /api/v1 + scope_prefix + p).
+#       - when we see a bare `cfg.route("<p>", web::<m>().to(...))`
+#         emit (METHOD, /api/v1 + p) — no scope prefix.
+#
+# This mirrors the real router structure:
+#   * handlers/system.rs      → bare cfg.route (no scope)
+#   * handlers/users.rs       → web::scope("/users") + bare cfg.route for
+#                               "/roles" and "/audit"
+#   * handlers/auth.rs etc.   → single web::scope
+#   * products/handlers.rs    → web::scope("/products"), bare
+#                               cfg.route("/images/{imgid}", ...),
+#                               web::scope("/imports")
+#
+# We also skip `web::scope("/api/v1")` (app-level) and the SPA fallback in
+# spa.rs, neither of which belong in the inventory.
+
+ROUTER_AWK='
+    function extract_between(s, open_tok, close_tok,    i, j) {
+        i = index(s, open_tok)
+        if (i == 0) return ""
+        i += length(open_tok)
+        j = index(substr(s, i), close_tok)
+        if (j == 0) return ""
+        return substr(s, i, j - 1)
+    }
+    function extract_method(s,    p) {
+        # look for web::<method>()
+        if (match(s, /web::(get|post|put|patch|delete)\(\)/)) {
+            p = substr(s, RSTART, RLENGTH)
+            sub(/^web::/, "", p); sub(/\(\)$/, "", p)
+            return toupper(p)
+        }
+        return ""
+    }
+
+    function emit(scope, p, m_u) {
+        if (m_u == "") return
+        # p may legitimately be "" for `.route("", web::get())` — that means
+        # the route is mounted at exactly the scope root. Treat the empty
+        # path as a valid suffix and only reject if BOTH scope and p are
+        # empty (no route at all).
+        if (scope == "" && p == "") return
+        printf "%s %s\n", m_u, "/api/v1" scope p
+    }
+    BEGIN { scope = ""; in_scope = 0; pending = 0; pending_p = "" }
+    # Ignore the app-level scope — it only wraps the configure() call.
+    /web::scope\("\/api\/v1"\)/ { next }
+    # Enter a feature-family scope block.
+    /web::scope\("/ {
+        scope = extract_between($0, "web::scope(\"", "\"")
+        if (scope != "") { in_scope = 1; next }
+    }
+    # End of the enclosing cfg.service(...) block that held the scope.
+    in_scope == 1 && /^[[:space:]]*\);[[:space:]]*$/ {
+        scope = ""; in_scope = 0; pending = 0; pending_p = ""
+        next
+    }
+    # Route inside an active scope. Two shapes:
+    #   (a) single line:  .route("<p>", web::<m>().to(...))
+    #   (b) multi line :  .route(\n  "<p>",\n  web::<m>().to(...),\n)
+    # Form (a) has web::<m>() on the same line; form (b) does not.
+    in_scope == 1 && /\.route\(/ {
+        # On same line if `.route("…"` appears; otherwise multi-line form.
+        if (match($0, /\.route\("/)) {
+            p = extract_between($0, ".route(\"", "\"")
+            m_u = extract_method($0)
+            if (m_u != "") {
+                emit(scope, p, m_u)
+                pending = 0; pending_p = ""
+            } else {
+                pending = 1; pending_p = p
+            }
+        } else {
+            # Multi-line `.route(` — path comes on a later line.
+            pending = 1; pending_p = ""
+        }
+        next
+    }
+    # Multi-line form (a) continuation — path on its own line after bare `.route(`
+    in_scope == 1 && pending == 1 && /^[[:space:]]*"[^"]*"[[:space:]]*,[[:space:]]*$/ && pending_p == "" {
+        line = $0
+        sub(/^[[:space:]]*"/, "", line); sub(/"[[:space:]]*,[[:space:]]*$/, "", line)
+        pending_p = line
+        next
+    }
+    # Multi-line form (b) continuation — method on a later line.
+    in_scope == 1 && pending == 1 {
+        m_u = extract_method($0)
+        if (m_u != "") {
+            emit(scope, pending_p, m_u)
+            pending = 0; pending_p = ""
+        }
+        next
+    }
+    # Bare cfg.route (no active scope).
+    in_scope == 0 && /cfg\.route\("/ {
+        p = extract_between($0, "cfg.route(\"", "\"")
+        m_u = extract_method($0)
+        if (p == "/{tail:.*}") next   # SPA fallback
+        if (m_u != "") emit("", p, m_u)
+        next
+    }
+'
+
+router_pairs=$(find "${HANDLERS_DIR}" -type f -name '*.rs' -print0 \
+    | xargs -0 awk "${ROUTER_AWK}" \
+    | sort -u)
+router_pair_count=$(printf '%s\n' "${router_pairs}" | grep -c . || true)
+
+# ---- Covered test IDs ------------------------------------------------------
 covered_ids=""
 if [[ -d "${TESTS_DIR}" ]]; then
     covered_ids=$(grep -RhoE '\bfn[[:space:]]+t_[A-Za-z]{1,5}[0-9]+_[A-Za-z0-9_]*[[:space:]]*\(' \
@@ -101,11 +249,16 @@ if [[ -d "${TESTS_DIR}" ]]; then
 fi
 covered_count=$(printf '%s\n' "${covered_ids}" | grep -c . || true)
 
-# ---- Set differences (reverse check: covered must be subset of inventory) ----
+# ---- Set differences -------------------------------------------------------
 reverse_orphan=$(comm -13 <(printf '%s\n' "${inventory_ids}") <(printf '%s\n' "${covered_ids}"))
-reverse_orphan_count=$(printf '%s\n' "${reverse_orphan}"  | grep -c . || true)
+reverse_orphan_count=$(printf '%s\n' "${reverse_orphan}" | grep -c . || true)
 
-# ---- Forward parity against the authoritative declared total ----
+spec_only_pairs=$(comm -23 <(printf '%s\n' "${spec_pairs}")   <(printf '%s\n' "${router_pairs}"))
+router_only_pairs=$(comm -13 <(printf '%s\n' "${spec_pairs}") <(printf '%s\n' "${router_pairs}"))
+spec_only_count=$(printf '%s\n' "${spec_only_pairs}"   | grep -c . || true)
+router_only_count=$(printf '%s\n' "${router_only_pairs}" | grep -c . || true)
+
+# ---- Forward ID parity against the authoritative declared total -----------
 if (( declared_total > 0 )); then
     capped_covered=${covered_count}
     (( capped_covered > declared_total )) && capped_covered=${declared_total}
@@ -121,24 +274,40 @@ mode="progress"
 [[ -f "${MARKER}" ]] && mode="strict"
 
 echo "==================================================="
-echo " TerraOps endpoint-parity audit"
+echo " TerraOps endpoint-parity audit (Gate 3)"
 echo "==================================================="
 echo " spec file              : ${SPEC_FILE}"
+echo " handlers dir           : ${HANDLERS_DIR}"
 echo " tests dir              : ${TESTS_DIR}"
 echo " mode                   : ${mode}"
 echo " authoritative total    : ${declared_total}    (from \"## Totals\")"
-echo " covered_ids            : ${covered_count}"
+echo " spec inventory IDs     : ${inventory_count}"
+echo " spec (method,path)     : ${spec_pair_count}"
+echo " router (method,path)   : ${router_pair_count}"
+echo " covered test IDs       : ${covered_count}"
 echo " forward parity         : ${covered_count}/${declared_total}  (${forward_pct}%)"
 echo " reverse orphans        : ${reverse_orphan_count}"
+echo " spec-only routes       : ${spec_only_count}"
+echo " router-only routes     : ${router_only_count}"
 echo "==================================================="
 
 if [[ ${reverse_orphan_count} -gt 0 ]]; then
-    echo "REVERSE CHECK FAILED — test IDs with no matching endpoint in inventory:" >&2
+    echo "REVERSE ID CHECK FAILED — test IDs with no matching endpoint in inventory:" >&2
     printf '  - %s\n' ${reverse_orphan} >&2
 fi
 
+if [[ ${spec_only_count} -gt 0 ]]; then
+    echo "METHOD+PATH CHECK FAILED — routes documented in api-spec.md but NOT mounted in handlers:" >&2
+    printf '  - %s\n' "${spec_only_pairs}" >&2
+fi
+
+if [[ ${router_only_count} -gt 0 ]]; then
+    echo "METHOD+PATH CHECK FAILED — routes mounted in handlers but NOT documented in api-spec.md:" >&2
+    printf '  - %s\n' "${router_only_pairs}" >&2
+fi
+
 if [[ "${mode}" == "strict" && ${forward_missing_count} -gt 0 ]]; then
-    echo "FORWARD CHECK FAILED — ${forward_missing_count} of ${declared_total} authoritative endpoints have no t_<id>_* test." >&2
+    echo "FORWARD ID CHECK FAILED — ${forward_missing_count} of ${declared_total} authoritative endpoints have no t_<id>_* test." >&2
 fi
 
 # ---- JSON summary (no jq dep) ----
@@ -146,10 +315,15 @@ fi
     printf '{\n'
     printf '  "mode": "%s",\n' "${mode}"
     printf '  "api_total": %d,\n' "${declared_total}"
+    printf '  "spec_inventory_ids": %d,\n' "${inventory_count}"
+    printf '  "spec_pairs": %d,\n' "${spec_pair_count}"
+    printf '  "router_pairs": %d,\n' "${router_pair_count}"
     printf '  "covered": %d,\n' "${covered_count}"
     printf '  "forward_pct": %s,\n' "${forward_pct}"
     printf '  "forward_missing_count": %d,\n' "${forward_missing_count}"
-    printf '  "reverse_orphans": %d\n' "${reverse_orphan_count}"
+    printf '  "reverse_orphans": %d,\n' "${reverse_orphan_count}"
+    printf '  "spec_only_routes": %d,\n' "${spec_only_count}"
+    printf '  "router_only_routes": %d\n' "${router_only_count}"
     printf '}\n'
 } > "${OUT_JSON}"
 
@@ -157,9 +331,12 @@ fi
 if [[ ${reverse_orphan_count} -gt 0 ]]; then
     exit 1
 fi
+if [[ ${spec_only_count} -gt 0 || ${router_only_count} -gt 0 ]]; then
+    exit 1
+fi
 if [[ "${mode}" == "strict" && ${forward_missing_count} -gt 0 ]]; then
     exit 1
 fi
 
-echo "audit_endpoints: OK (${mode} mode; authoritative total = ${declared_total})"
+echo "audit_endpoints: OK (${mode} mode; authoritative total = ${declared_total}; method+path parity clean)"
 exit 0

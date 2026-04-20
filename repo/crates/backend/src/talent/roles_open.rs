@@ -67,6 +67,21 @@ pub struct RoleFilter {
     pub min_years: Option<i32>,
     /// Any of the listed skills must appear in `required_skills`.
     pub skills_any: Vec<String>,
+    /// Audit #8 Issue #4: recruiter role search now honors the extended
+    /// role attributes. Case-insensitive substring match on `required_major`.
+    pub required_major: Option<String>,
+    /// Minimum education level (ordinal: highschool < associate < bachelor
+    /// < master < phd). Rows with NULL `min_education` are treated as 0
+    /// and therefore only pass when the filter itself is `None`.
+    pub min_education: Option<String>,
+    /// Case-insensitive substring match on `required_availability`.
+    pub required_availability: Option<String>,
+    /// Sort column. Whitelisted set: `created_at` (default), `opened_at`,
+    /// `title`, `min_years`, `status`. Anything else falls back to
+    /// `created_at`.
+    pub sort_by: Option<String>,
+    /// Sort direction — `asc` or `desc` (default: `desc`).
+    pub sort_dir: Option<String>,
 }
 
 /// Same as `list` but honors search/filter parameters.
@@ -87,6 +102,9 @@ pub async fn list_filtered(
     let mut bind_site: Option<Uuid> = None;
     let mut bind_min_years: Option<i32> = None;
     let mut bind_skills: Option<Vec<String>> = None;
+    let mut bind_major: Option<String> = None;
+    let mut bind_min_edu: Option<i32> = None;
+    let mut bind_avail: Option<String> = None;
 
     if let Some(q) = f.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         n += 1;
@@ -123,6 +141,55 @@ pub async fn list_filtered(
         where_parts.push(format!("required_skills && ${n}"));
         bind_skills = Some(f.skills_any.clone());
     }
+    if let Some(m) = f
+        .required_major
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        n += 1;
+        where_parts.push(format!("required_major ILIKE ${n}"));
+        bind_major = Some(format!("%{}%", m.replace('%', "\\%")));
+    }
+    if let Some(me) = f
+        .min_education
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // Map to ordinal; unknown words become 0 (no-op).
+        let rank = match me.to_ascii_lowercase().as_str() {
+            "highschool" => 1,
+            "associate" => 2,
+            "bachelor" => 3,
+            "master" => 4,
+            "phd" => 5,
+            _ => 0,
+        };
+        if rank > 0 {
+            n += 1;
+            where_parts.push(format!(
+                "COALESCE(CASE lower(min_education) \
+                     WHEN 'highschool' THEN 1 \
+                     WHEN 'associate'  THEN 2 \
+                     WHEN 'bachelor'   THEN 3 \
+                     WHEN 'master'     THEN 4 \
+                     WHEN 'phd'        THEN 5 \
+                     ELSE 0 END, 0) >= ${n}"
+            ));
+            bind_min_edu = Some(rank);
+        }
+    }
+    if let Some(av) = f
+        .required_availability
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        n += 1;
+        where_parts.push(format!("required_availability ILIKE ${n}"));
+        bind_avail = Some(format!("%{}%", av.replace('%', "\\%")));
+    }
 
     let where_sql = if where_parts.is_empty() {
         String::new()
@@ -130,9 +197,34 @@ pub async fn list_filtered(
         format!(" WHERE {}", where_parts.join(" AND "))
     };
 
+    // Whitelisted sort columns — never interpolate user text directly.
+    let sort_col = match f
+        .sort_by
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("opened_at") => "opened_at",
+        Some("title") => "title",
+        Some("min_years") => "min_years",
+        Some("status") => "status",
+        _ => "created_at",
+    };
+    let sort_dir = match f
+        .sort_dir
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("asc") => "ASC",
+        _ => "DESC",
+    };
+
     let page_sql = format!(
         "SELECT {SELECT_COLS} FROM roles_open{where_sql} \
-         ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+         ORDER BY {sort_col} {sort_dir} LIMIT ${} OFFSET ${}",
         n + 1,
         n + 2
     );
@@ -163,6 +255,18 @@ pub async fn list_filtered(
         total_q = total_q.bind(v);
     }
     if let Some(v) = bind_skills.as_ref() {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_major.as_ref() {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_min_edu {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_avail.as_ref() {
         page_q = page_q.bind(v);
         total_q = total_q.bind(v);
     }

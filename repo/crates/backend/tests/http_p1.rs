@@ -26,7 +26,7 @@ fn loopback_peer() -> SocketAddr {
     "127.0.0.1:50000".parse().unwrap()
 }
 
-use common::{authed, build_test_app, create_user_with_roles, TestCtx};
+use common::{authed, build_test_app, create_user_with_roles, username_for, TestCtx};
 
 // ============================================================================
 // System — S1, S2
@@ -62,7 +62,7 @@ async fn t_s2_ready_reports_db_up() {
 #[actix_web::test]
 async fn t_a1_login_returns_access_token_and_refresh_cookie() {
     let ctx = TestCtx::new().await;
-    create_user_with_roles(
+    let uid = create_user_with_roles(
         &ctx.pool,
         &ctx.keys,
         "a1@example.com",
@@ -70,10 +70,11 @@ async fn t_a1_login_returns_access_token_and_refresh_cookie() {
         &[Role::RegularUser],
     )
     .await;
+    let uname = username_for(&ctx.pool, uid).await;
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
     let req = test::TestRequest::post()
         .uri("/api/v1/auth/login")
-        .set_json(json!({"username": "a1@example.com", "password": "TerraOps!2026"}))
+        .set_json(json!({"username": uname, "password": "TerraOps!2026"}))
         .to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -96,7 +97,7 @@ async fn t_a1_login_returns_access_token_and_refresh_cookie() {
 #[actix_web::test]
 async fn t_a1_login_rejects_bad_password() {
     let ctx = TestCtx::new().await;
-    create_user_with_roles(
+    let uid = create_user_with_roles(
         &ctx.pool,
         &ctx.keys,
         "a1bad@example.com",
@@ -104,10 +105,35 @@ async fn t_a1_login_rejects_bad_password() {
         &[Role::RegularUser],
     )
     .await;
+    let uname = username_for(&ctx.pool, uid).await;
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
     let req = test::TestRequest::post()
         .uri("/api/v1/auth/login")
-        .set_json(json!({"username": "a1bad@example.com", "password": "WrongPass!9999"}))
+        .set_json(json!({"username": uname, "password": "WrongPass!9999"}))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Audit #10 issue #2: the login contract is **username-only** and must
+/// not silently fall back to email lookup. Passing an email value as the
+/// `username` field for a user whose DB username is different must fail
+/// with 401 AUTH_INVALID_CREDENTIALS.
+#[actix_web::test]
+async fn t_a1_login_rejects_email_as_username() {
+    let ctx = TestCtx::new().await;
+    let _uid = create_user_with_roles(
+        &ctx.pool,
+        &ctx.keys,
+        "a1noemail@example.com",
+        "TerraOps!2026",
+        &[Role::RegularUser],
+    )
+    .await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::post()
+        .uri("/api/v1/auth/login")
+        .set_json(json!({"username": "a1noemail@example.com", "password": "TerraOps!2026"}))
         .to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
@@ -116,7 +142,7 @@ async fn t_a1_login_rejects_bad_password() {
 #[actix_web::test]
 async fn t_a2_refresh_rotates_cookie_and_issues_new_access_token() {
     let ctx = TestCtx::new().await;
-    create_user_with_roles(
+    let uid = create_user_with_roles(
         &ctx.pool,
         &ctx.keys,
         "a2@example.com",
@@ -124,11 +150,12 @@ async fn t_a2_refresh_rotates_cookie_and_issues_new_access_token() {
         &[Role::RegularUser],
     )
     .await;
+    let uname = username_for(&ctx.pool, uid).await;
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
     // Login to obtain an initial refresh cookie.
     let req = test::TestRequest::post()
         .uri("/api/v1/auth/login")
-        .set_json(json!({"username": "a2@example.com", "password": "TerraOps!2026"}))
+        .set_json(json!({"username": uname, "password": "TerraOps!2026"}))
         .to_request();
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -158,7 +185,7 @@ async fn t_a2_refresh_rotates_cookie_and_issues_new_access_token() {
 #[actix_web::test]
 async fn t_a3_logout_revokes_session() {
     let ctx = TestCtx::new().await;
-    create_user_with_roles(
+    let uid = create_user_with_roles(
         &ctx.pool,
         &ctx.keys,
         "a3@example.com",
@@ -166,10 +193,11 @@ async fn t_a3_logout_revokes_session() {
         &[Role::RegularUser],
     )
     .await;
+    let uname = username_for(&ctx.pool, uid).await;
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
     let req = test::TestRequest::post()
         .uri("/api/v1/auth/login")
-        .set_json(json!({"username": "a3@example.com", "password": "TerraOps!2026"}))
+        .set_json(json!({"username": uname, "password": "TerraOps!2026"}))
         .to_request();
     let login = test::call_service(&app, req).await;
     let cookie = login
@@ -540,10 +568,11 @@ async fn t_u9_reset_password_requires_user_manage() {
         .set_json(json!({"new_password": "BrandNew!2099"}))
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status(), StatusCode::NO_CONTENT);
-    // Login with the new password works.
+    // Login with the new password works (username-only contract).
+    let uname = username_for(&ctx.pool, victim).await;
     let req = test::TestRequest::post()
         .uri("/api/v1/auth/login")
-        .set_json(json!({"username": "u9v@example.com", "password": "BrandNew!2099"}))
+        .set_json(json!({"username": uname, "password": "BrandNew!2099"}))
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status(), StatusCode::OK);
 }
@@ -1197,7 +1226,7 @@ async fn t_ref9_states_returns_seeded_list() {
 }
 
 // ============================================================================
-// Notifications — N1..N7 (self-scoped)
+// Notifications — N1..N9 (self-scoped)
 // ============================================================================
 
 #[actix_web::test]
@@ -1361,6 +1390,54 @@ async fn t_n7_mailbox_exports_self_scoped() {
     assert_eq!(res.status(), StatusCode::OK);
     let body: Value = test::read_body_json(res).await;
     assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+// Audit #10 issue #1: N8 covers `POST /api/v1/notifications/mailbox-export`
+// (create a local .mbox artifact) so every mounted notification endpoint now
+// has a `t_<id>_*` test. The endpoint returns the freshly-minted export
+// summary even when the caller has zero notifications — an empty-but-valid
+// mbox file is still a successful export.
+#[actix_web::test]
+async fn t_n8_create_mailbox_export_returns_summary() {
+    let ctx = TestCtx::new().await;
+    let (_id, tok) = authed(&ctx.pool, &ctx.keys, "n8@example.com", &[Role::RegularUser]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::post()
+        .uri("/api/v1/notifications/mailbox-export")
+        .insert_header(("Authorization", format!("Bearer {}", tok)))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let body: Value = test::read_body_json(res).await;
+    assert!(body.get("id").is_some());
+    assert!(body.get("path").is_some());
+    assert!(body.get("size_bytes").is_some());
+}
+
+// Audit #10 issue #1: N9 covers `GET /api/v1/notifications/mailbox-exports/{id}`
+// (download the previously-generated .mbox). The call chains on top of N8 so
+// the artifact the download endpoint streams is the one N8 just produced —
+// hits the real file-system code path and the self-scoped DB lookup.
+#[actix_web::test]
+async fn t_n9_download_mailbox_export_self_scoped() {
+    let ctx = TestCtx::new().await;
+    let (_id, tok) = authed(&ctx.pool, &ctx.keys, "n9@example.com", &[Role::RegularUser]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    // First create an export so there is something to download.
+    let req = test::TestRequest::post()
+        .uri("/api/v1/notifications/mailbox-export")
+        .insert_header(("Authorization", format!("Bearer {}", tok)))
+        .to_request();
+    let created: Value = test::read_body_json(test::call_service(&app, req).await).await;
+    let export_id = created["id"].as_str().unwrap().to_string();
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/v1/notifications/mailbox-exports/{}", export_id))
+        .insert_header(("Authorization", format!("Bearer {}", tok)))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let ctype = res.headers().get("content-type").unwrap().to_str().unwrap();
+    assert!(ctype.starts_with("application/mbox"));
 }
 
 // ============================================================================

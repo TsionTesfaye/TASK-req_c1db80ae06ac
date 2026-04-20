@@ -96,6 +96,31 @@ async fn list_candidates(
     let offset = ((page - 1) as i64) * (page_size as i64);
     let limit = page_size as i64;
 
+    // Audit #10 issue #3: validate user-selectable sort params against
+    // the whitelist before they reach the repo layer. Unknown values are
+    // a user-visible 400 rather than a silent fall-back so a typo in the
+    // UI is actionable.
+    if let Some(ref sb) = query.sort_by {
+        let t = sb.trim().to_ascii_lowercase();
+        if !t.is_empty()
+            && !crate::talent::search::CANDIDATE_SORT_COLUMNS.contains(&t.as_str())
+        {
+            return Err(crate::errors::AppError::Validation(
+                "sort_by must be one of last_active_at|created_at|updated_at|full_name|years_experience|completeness_score".into(),
+            ));
+        }
+    }
+    if let Some(ref sd) = query.sort_dir {
+        let t = sd.trim().to_ascii_lowercase();
+        if !t.is_empty()
+            && !crate::talent::search::CANDIDATE_SORT_DIRS.contains(&t.as_str())
+        {
+            return Err(crate::errors::AppError::Validation(
+                "sort_dir must be asc|desc".into(),
+            ));
+        }
+    }
+
     let (rows, total) = candidates::list(
         &state.pool,
         query.q.as_deref(),
@@ -105,6 +130,8 @@ async fn list_candidates(
         query.major.as_deref(),
         query.min_education.as_deref(),
         query.availability.as_deref(),
+        query.sort_by.as_deref(),
+        query.sort_dir.as_deref(),
         limit,
         offset,
     )
@@ -163,6 +190,14 @@ struct RoleListQuery {
     pub skills: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
+    /// Audit #8 Issue #4: extended role attributes exposed in T4.
+    pub required_major: Option<String>,
+    pub min_education: Option<String>,
+    pub required_availability: Option<String>,
+    /// Whitelisted sort column: `created_at|opened_at|title|min_years|status`.
+    pub sort_by: Option<String>,
+    /// `asc|desc`. Default: `desc`.
+    pub sort_dir: Option<String>,
 }
 
 async fn list_roles(
@@ -197,6 +232,39 @@ async fn list_roles(
             ));
         }
     }
+    // Validate min_education against the whitelist (same set used by
+    // candidate search) — unknown values become a user-visible 400 instead
+    // of a silent no-op.
+    if let Some(ref me) = q.min_education {
+        let t = me.trim().to_ascii_lowercase();
+        if !t.is_empty() && !matches!(
+            t.as_str(),
+            "highschool" | "associate" | "bachelor" | "master" | "phd"
+        ) {
+            return Err(crate::errors::AppError::Validation(
+                "min_education must be highschool|associate|bachelor|master|phd".into(),
+            ));
+        }
+    }
+    if let Some(ref sb) = q.sort_by {
+        let t = sb.trim().to_ascii_lowercase();
+        if !t.is_empty() && !matches!(
+            t.as_str(),
+            "created_at" | "opened_at" | "title" | "min_years" | "status"
+        ) {
+            return Err(crate::errors::AppError::Validation(
+                "sort_by must be created_at|opened_at|title|min_years|status".into(),
+            ));
+        }
+    }
+    if let Some(ref sd) = q.sort_dir {
+        let t = sd.trim().to_ascii_lowercase();
+        if !t.is_empty() && !matches!(t.as_str(), "asc" | "desc") {
+            return Err(crate::errors::AppError::Validation(
+                "sort_dir must be asc|desc".into(),
+            ));
+        }
+    }
     let filter = crate::talent::roles_open::RoleFilter {
         q: q.q,
         status: q.status,
@@ -204,6 +272,11 @@ async fn list_roles(
         site_id: q.site_id,
         min_years: q.min_years,
         skills_any: skills,
+        required_major: q.required_major,
+        min_education: q.min_education,
+        required_availability: q.required_availability,
+        sort_by: q.sort_by,
+        sort_dir: q.sort_dir,
     };
     let (rows, total) =
         roles_open::list_filtered(&state.pool, &filter, r.limit() as i64, r.offset() as i64)
@@ -257,6 +330,8 @@ async fn get_recommendations(
         &state.pool,
         None,
         &[],
+        None,
+        None,
         None,
         None,
         None,

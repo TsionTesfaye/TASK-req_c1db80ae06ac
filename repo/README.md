@@ -19,7 +19,10 @@ notifications context, typed API client with 3-second timeout +
 single-GET-retry, `PermGate`-aware nav, real admin / monitoring /
 notifications pages), **plus the complete P-A Catalog & Governance,
 P-B Environmental Intelligence / KPI / Alerts / Reports, and P-C Talent
-Intelligence backend packages**, **plus P3 cross-domain integration
+Intelligence packages — both backend endpoints and the corresponding
+Yew frontend role workspaces (data-steward catalog + imports, analyst
+KPI / metrics / alerts / reports, recruiter talent workbench) are
+delivered and live in `dist/`**, **plus P3 cross-domain integration
 (background jobs) and P4 hardening coverage**:
 
 - **P-A** — products P1–P14, imports I1–I7, CSV/XLSX streaming export,
@@ -70,9 +73,10 @@ frontend proof on this toolchain — see "Verification Method" below and
 `docs/test-coverage.md §Why the frontend is not measured by wasm
 source-based line coverage`.
 
-Remaining work — the P-A/P-B/P-C frontend surfaces, P3 cross-domain
-integration, and the final P4/P5 hardening gate — is tracked in
-[`plan.md`](./plan.md).
+The complete P-A/P-B/P-C frontend surfaces, P3 cross-domain integration,
+and the P4/P5 hardening gate are all delivered and gated by
+`./run_tests.sh`. The canonical execution checklist and remediation
+history live in [`plan.md`](./plan.md).
 
 ## Tech Stack
 

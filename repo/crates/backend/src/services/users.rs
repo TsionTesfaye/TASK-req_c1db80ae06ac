@@ -27,6 +27,13 @@ pub async fn find_by_id(pool: &PgPool, user_id: Uuid) -> AppResult<Option<UserRo
     Ok(row)
 }
 
+/// Find a user by plaintext email → normalized HMAC lookup.
+///
+/// Audit #10 issue #2: this helper is **not** used by `/auth/login`
+/// anymore — the sign-in contract is username-only with no email
+/// fallback. It remains here for admin-only flows that may need to
+/// resolve an email to a user id outside the login path.
+#[allow(dead_code)]
 pub async fn find_by_email(
     pool: &PgPool,
     email_plain: &str,

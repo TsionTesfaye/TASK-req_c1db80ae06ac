@@ -4402,6 +4402,12 @@ pub mod recruiter {
         let availability = use_state(String::new);
         let major = use_state(String::new);
         let min_education = use_state(String::new);
+        // Audit #10 issue #3: user-selectable sort controls (whitelisted
+        // column + direction). Defaults match the pre-audit implicit
+        // order (last_active_at DESC) so recruiters see the freshest
+        // profiles first when they land on the page.
+        let sort_by = use_state(|| "last_active_at".to_string());
+        let sort_dir = use_state(|| "desc".to_string());
 
         // Canonicalized querystring for the current form state (used by
         // tests + the reload callback).
@@ -4413,6 +4419,8 @@ pub mod recruiter {
             let availability = availability.clone();
             let major = major.clone();
             let min_education = min_education.clone();
+            let sort_by = sort_by.clone();
+            let sort_dir = sort_dir.clone();
             let page = page.clone();
             move || -> String {
                 let mut parts: Vec<String> = Vec::new();
@@ -4441,6 +4449,11 @@ pub mod recruiter {
                 push(&mut parts, "availability", &*availability);
                 push(&mut parts, "major", &*major);
                 push(&mut parts, "min_education", &*min_education);
+                // Audit #10 issue #3: forward user-selected sort to
+                // `GET /talent/candidates` so ORDER BY reflects the
+                // recruiter's pick.
+                push(&mut parts, "sort_by", &*sort_by);
+                push(&mut parts, "sort_dir", &*sort_dir);
                 parts.push(format!("page={}", *page));
                 parts.push(format!("page_size={}", 50));
                 parts.join("&")
@@ -4492,6 +4505,8 @@ pub mod recruiter {
             let availability = availability.clone();
             let major = major.clone();
             let min_education = min_education.clone();
+            let sort_by = sort_by.clone();
+            let sort_dir = sort_dir.clone();
             let reload = reload.clone();
             let page = page.clone();
             Callback::from(move |_: MouseEvent| {
@@ -4502,6 +4517,10 @@ pub mod recruiter {
                 availability.set(String::new());
                 major.set(String::new());
                 min_education.set(String::new());
+                // Audit #10 issue #3: reset sort to the safe default so
+                // "Clear" really clears every selectable search control.
+                sort_by.set("last_active_at".to_string());
+                sort_dir.set("desc".to_string());
                 if *page != 1 { page.set(1); } else { reload.emit(()); }
             })
         };
@@ -4576,6 +4595,36 @@ pub mod recruiter {
                             <option value="bachelor"   selected={&*min_education == "bachelor"}>{ "Bachelor" }</option>
                             <option value="master"     selected={&*min_education == "master"}>{ "Master" }</option>
                             <option value="phd"        selected={&*min_education == "phd"}>{ "PhD" }</option>
+                        </select>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Sort by" }</span>
+                        <select class="tx-input" onchange={{
+                            let s = sort_by.clone();
+                            Callback::from(move |e: Event| {
+                                let t: HtmlInputElement = e.target_unchecked_into();
+                                s.set(t.value());
+                            })
+                        }}>
+                            <option value="last_active_at"     selected={&*sort_by == "last_active_at"}>{ "Last active" }</option>
+                            <option value="created_at"         selected={&*sort_by == "created_at"}>{ "Created" }</option>
+                            <option value="updated_at"         selected={&*sort_by == "updated_at"}>{ "Updated" }</option>
+                            <option value="full_name"          selected={&*sort_by == "full_name"}>{ "Name" }</option>
+                            <option value="years_experience"   selected={&*sort_by == "years_experience"}>{ "Years of experience" }</option>
+                            <option value="completeness_score" selected={&*sort_by == "completeness_score"}>{ "Profile completeness" }</option>
+                        </select>
+                    </label>
+                    <label class="tx-field">
+                        <span>{ "Direction" }</span>
+                        <select class="tx-input" onchange={{
+                            let s = sort_dir.clone();
+                            Callback::from(move |e: Event| {
+                                let t: HtmlInputElement = e.target_unchecked_into();
+                                s.set(t.value());
+                            })
+                        }}>
+                            <option value="desc" selected={&*sort_dir == "desc"}>{ "Descending" }</option>
+                            <option value="asc"  selected={&*sort_dir == "asc"}>{ "Ascending" }</option>
                         </select>
                     </label>
                     <div class="tx-form__actions">
@@ -4778,11 +4827,23 @@ pub mod recruiter {
         let title = use_state(String::new);
         let skills = use_state(String::new);
         let years = use_state(|| "0".to_string());
+        // Audit #8 Issue #4: role creation now exposes the extended role
+        // attributes so recruiters can capture the full requirement set.
+        let create_major = use_state(String::new);
+        let create_min_edu = use_state(String::new);
+        let create_avail = use_state(String::new);
         // Audit #4 Issue #5: recruiter-side role search/filter state.
+        // Audit #8 Issue #4 extends this with major / min_education /
+        // availability filters and whitelisted sort column + direction.
         let search_q = use_state(String::new);
         let search_status = use_state(String::new);
         let search_min_years = use_state(String::new);
         let search_skills = use_state(String::new);
+        let search_major = use_state(String::new);
+        let search_min_edu = use_state(String::new);
+        let search_avail = use_state(String::new);
+        let sort_by = use_state(|| "created_at".to_string());
+        let sort_dir = use_state(|| "desc".to_string());
 
         let reload = {
             let auth = auth.clone();
@@ -4791,6 +4852,11 @@ pub mod recruiter {
             let search_status = search_status.clone();
             let search_min_years = search_min_years.clone();
             let search_skills = search_skills.clone();
+            let search_major = search_major.clone();
+            let search_min_edu = search_min_edu.clone();
+            let search_avail = search_avail.clone();
+            let sort_by = sort_by.clone();
+            let sort_dir = sort_dir.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
@@ -4799,11 +4865,29 @@ pub mod recruiter {
                 let status = (*search_status).clone();
                 let min_years = search_min_years.parse::<i32>().ok();
                 let skills_csv = (*search_skills).clone();
+                let major = (*search_major).clone();
+                let min_edu = (*search_min_edu).clone();
+                let avail = (*search_avail).clone();
+                let sort_by_s = (*sort_by).clone();
+                let sort_dir_s = (*sort_dir).clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    let q_opt = if q.trim().is_empty() { None } else { Some(q.as_str()) };
-                    let s_opt = if status.trim().is_empty() { None } else { Some(status.as_str()) };
-                    let sk_opt = if skills_csv.trim().is_empty() { None } else { Some(skills_csv.as_str()) };
-                    match api.search_talent_roles(q_opt, s_opt, min_years, sk_opt).await {
+                    fn opt(s: &str) -> Option<&str> {
+                        if s.trim().is_empty() { None } else { Some(s) }
+                    }
+                    match api
+                        .search_talent_roles_ext(
+                            opt(&q),
+                            opt(&status),
+                            min_years,
+                            opt(&skills_csv),
+                            opt(&major),
+                            opt(&min_edu),
+                            opt(&avail),
+                            opt(&sort_by_s),
+                            opt(&sort_dir_s),
+                        )
+                        .await
+                    {
                         Ok(v) => list.set(LoadState::Loaded(v)),
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
@@ -4847,20 +4931,27 @@ pub mod recruiter {
             let title = title.clone();
             let skills = skills.clone();
             let years = years.clone();
+            let create_major = create_major.clone();
+            let create_min_edu = create_min_edu.clone();
+            let create_avail = create_avail.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
                 let parsed: Vec<String> = skills
                     .split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                 let min_years: i32 = years.parse().unwrap_or(0);
+                let trim_opt = |s: &str| {
+                    let t = s.trim();
+                    if t.is_empty() { None } else { Some(t.to_string()) }
+                };
                 let req = CreateRoleRequest {
                     title: (*title).clone(),
                     department_id: None,
                     required_skills: parsed,
                     min_years,
                     site_id: None,
-                    required_major: None,
-                    min_education: None,
-                    required_availability: None,
+                    required_major: trim_opt(&create_major),
+                    min_education: trim_opt(&create_min_edu),
+                    required_availability: trim_opt(&create_avail),
                     status: None,
                 };
                 let api = auth.api();
@@ -4868,12 +4959,18 @@ pub mod recruiter {
                 let reload = reload.clone();
                 let title = title.clone();
                 let skills = skills.clone();
+                let create_major = create_major.clone();
+                let create_min_edu = create_min_edu.clone();
+                let create_avail = create_avail.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.create_talent_role(&req).await {
                         Ok(_) => {
                             toast.success("Role opened.");
                             title.set(String::new());
                             skills.set(String::new());
+                            create_major.set(String::new());
+                            create_min_edu.set(String::new());
+                            create_avail.set(String::new());
                             reload.emit(());
                         }
                         Err(e) => toast.error(&e.user_facing()),
@@ -4883,6 +4980,27 @@ pub mod recruiter {
         };
 
         let create_card = if can_manage {
+            let on_major_in = {
+                let s = create_major.clone();
+                Callback::from(move |e: InputEvent| {
+                    let t: HtmlInputElement = e.target_unchecked_into();
+                    s.set(t.value());
+                })
+            };
+            let on_avail_in = {
+                let s = create_avail.clone();
+                Callback::from(move |e: InputEvent| {
+                    let t: HtmlInputElement = e.target_unchecked_into();
+                    s.set(t.value());
+                })
+            };
+            let on_min_edu_change = {
+                let s = create_min_edu.clone();
+                Callback::from(move |e: Event| {
+                    let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                    s.set(t.value());
+                })
+            };
             html! {
                 <section class="tx-card">
                     <h2 class="tx-title tx-title--sm">{ "Open a role" }</h2>
@@ -4893,6 +5011,18 @@ pub mod recruiter {
                                value={(*skills).clone()} oninput={on_skills}/>
                         <input class="tx-input" placeholder="Min years" required=true
                                value={(*years).clone()} oninput={on_years}/>
+                        <input class="tx-input" placeholder="Required major"
+                               value={(*create_major).clone()} oninput={on_major_in}/>
+                        <select class="tx-input" onchange={on_min_edu_change}>
+                            <option value="" selected={create_min_edu.is_empty()}>{ "Min education (any)" }</option>
+                            <option value="highschool" selected={&*create_min_edu == "highschool"}>{ "High school" }</option>
+                            <option value="associate"  selected={&*create_min_edu == "associate"}>{ "Associate" }</option>
+                            <option value="bachelor"   selected={&*create_min_edu == "bachelor"}>{ "Bachelor" }</option>
+                            <option value="master"     selected={&*create_min_edu == "master"}>{ "Master" }</option>
+                            <option value="phd"        selected={&*create_min_edu == "phd"}>{ "PhD" }</option>
+                        </select>
+                        <input class="tx-input" placeholder="Required availability"
+                               value={(*create_avail).clone()} oninput={on_avail_in}/>
                         <button class="tx-btn" type="submit">{ "Create" }</button>
                     </form>
                 </section>
@@ -4948,12 +5078,22 @@ pub mod recruiter {
             let ss = search_status.clone();
             let smy = search_min_years.clone();
             let ssk = search_skills.clone();
+            let sm = search_major.clone();
+            let sme = search_min_edu.clone();
+            let sa = search_avail.clone();
+            let sb = sort_by.clone();
+            let sd = sort_dir.clone();
             let reload = reload.clone();
             Callback::from(move |_: MouseEvent| {
                 sq.set(String::new());
                 ss.set(String::new());
                 smy.set(String::new());
                 ssk.set(String::new());
+                sm.set(String::new());
+                sme.set(String::new());
+                sa.set(String::new());
+                sb.set("created_at".to_string());
+                sd.set("desc".to_string());
                 reload.emit(());
             })
         };
@@ -4979,6 +5119,47 @@ pub mod recruiter {
                            value={(*search_min_years).clone()} oninput={set_input(search_min_years.clone())}/>
                     <input class="tx-input" placeholder="Skills (any, comma sep.)"
                            value={(*search_skills).clone()} oninput={set_input(search_skills.clone())}/>
+                    <input class="tx-input" placeholder="Required major contains…"
+                           value={(*search_major).clone()} oninput={set_input(search_major.clone())}/>
+                    <select class="tx-input" onchange={Callback::from({
+                        let sme = search_min_edu.clone();
+                        move |e: Event| {
+                            let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                            sme.set(t.value());
+                        }
+                    })}>
+                        <option value="" selected={search_min_edu.is_empty()}>{ "Min education (any)" }</option>
+                        <option value="highschool" selected={&*search_min_edu == "highschool"}>{ "High school" }</option>
+                        <option value="associate"  selected={&*search_min_edu == "associate"}>{ "Associate" }</option>
+                        <option value="bachelor"   selected={&*search_min_edu == "bachelor"}>{ "Bachelor" }</option>
+                        <option value="master"     selected={&*search_min_edu == "master"}>{ "Master" }</option>
+                        <option value="phd"        selected={&*search_min_edu == "phd"}>{ "PhD" }</option>
+                    </select>
+                    <input class="tx-input" placeholder="Required availability contains…"
+                           value={(*search_avail).clone()} oninput={set_input(search_avail.clone())}/>
+                    <select class="tx-input" onchange={Callback::from({
+                        let sb = sort_by.clone();
+                        move |e: Event| {
+                            let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                            sb.set(t.value());
+                        }
+                    })}>
+                        <option value="created_at" selected={&*sort_by == "created_at"}>{ "Sort: created" }</option>
+                        <option value="opened_at"  selected={&*sort_by == "opened_at"}>{ "Sort: opened" }</option>
+                        <option value="title"      selected={&*sort_by == "title"}>{ "Sort: title" }</option>
+                        <option value="min_years"  selected={&*sort_by == "min_years"}>{ "Sort: min years" }</option>
+                        <option value="status"     selected={&*sort_by == "status"}>{ "Sort: status" }</option>
+                    </select>
+                    <select class="tx-input" onchange={Callback::from({
+                        let sd = sort_dir.clone();
+                        move |e: Event| {
+                            let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                            sd.set(t.value());
+                        }
+                    })}>
+                        <option value="desc" selected={&*sort_dir == "desc"}>{ "desc" }</option>
+                        <option value="asc"  selected={&*sort_dir == "asc"}>{ "asc" }</option>
+                    </select>
                     <button class="tx-btn" type="submit">{ "Apply" }</button>
                     <button class="tx-btn tx-btn--ghost" type="button" onclick={on_clear}>{ "Clear" }</button>
                 </form>

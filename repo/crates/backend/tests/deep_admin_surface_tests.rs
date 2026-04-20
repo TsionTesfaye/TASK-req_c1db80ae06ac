@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use terraops_shared::roles::Role;
 use uuid::Uuid;
 
-use common::{authed, build_test_app, create_user_with_roles, TestCtx};
+use common::{authed, build_test_app, create_user_with_roles, username_for, TestCtx};
 
 fn bearer(tok: &str) -> String {
     format!("Bearer {tok}")
@@ -797,7 +797,7 @@ async fn deep_ref_departments_filter_and_write_perms() {
 #[actix_web::test]
 async fn deep_auth_login_refresh_logout_with_peer_addr_parses_ip() {
     let ctx = TestCtx::new().await;
-    create_user_with_roles(
+    let uid = create_user_with_roles(
         &ctx.pool,
         &ctx.keys,
         "deepauth-ip@example.com",
@@ -805,14 +805,17 @@ async fn deep_auth_login_refresh_logout_with_peer_addr_parses_ip() {
         &[Role::RegularUser],
     )
     .await;
+    let uname = username_for(&ctx.pool, uid).await;
     let app = test::init_service(build_test_app(ctx.state.clone())).await;
 
     // Login with peer_addr set -> hits the IP parse branch in login().
+    // Audit #10 issue #2: username-only login contract; use the
+    // DB-assigned username, not the email.
     let req = test::TestRequest::post()
         .uri("/api/v1/auth/login")
         .peer_addr(loopback_peer())
         .set_json(json!({
-            "username": "deepauth-ip@example.com",
+            "username": uname,
             "password": "TerraOps!2026"
         }))
         .to_request();

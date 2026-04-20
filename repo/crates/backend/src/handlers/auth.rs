@@ -1,6 +1,11 @@
 //! Auth endpoints A1–A5.
 //!
-//!   A1 POST /api/v1/auth/login         — email + password → access_token (+ refresh cookie)
+//! Audit #10 issue #2: `/auth/login` accepts **username + password
+//! only**. There is no email fallback — passing an email value as the
+//! `username` field is rejected with `AUTH_INVALID_CREDENTIALS` unless
+//! the user's DB `username` happens to equal that string exactly.
+//!
+//!   A1 POST /api/v1/auth/login         — username + password → access_token (+ refresh cookie)
 //!   A2 POST /api/v1/auth/refresh       — rotate refresh → new access_token
 //!   A3 POST /api/v1/auth/logout        — revoke presented refresh
 //!   A4 GET  /api/v1/auth/me            — current user + roles + permissions

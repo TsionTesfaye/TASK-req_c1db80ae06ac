@@ -239,3 +239,56 @@ async fn t_t13_remove_item_forbidden_for_other_user() {
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
+
+// ── T14: GET /api/v1/talent/watchlists/{id}/items ────────────────────────────
+//
+// Audit #10 issue #1: the list-items helper is mounted on the backend
+// and must be documented in `docs/api-spec.md` and covered by a
+// `t_t14_*` HTTP test so `scripts/audit_endpoints.sh` parity is real.
+
+#[actix_web::test]
+async fn t_t14_list_items_owner_scoped() {
+    let ctx = TestCtx::new().await;
+    let (uid, token) = authed(&ctx.pool, &ctx.keys, "t14own@example.com", &[Role::Recruiter]).await;
+
+    let (wl_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO talent_watchlists (owner_id, name) VALUES ($1, 'T14') RETURNING id",
+    )
+    .bind(uid)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/watchlists/{wl_id}/items"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn t_t14_list_items_forbidden_for_other_user() {
+    let ctx = TestCtx::new().await;
+    let (u1, _t1) = authed(&ctx.pool, &ctx.keys, "t14fo1@example.com", &[Role::Recruiter]).await;
+    let (_u2, t2) = authed(&ctx.pool, &ctx.keys, "t14fo2@example.com", &[Role::Recruiter]).await;
+
+    let (wl_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO talent_watchlists (owner_id, name) VALUES ($1, 'u1 list') RETURNING id",
+    )
+    .bind(u1)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/watchlists/{wl_id}/items"))
+        .insert_header(("Authorization", format!("Bearer {t2}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}

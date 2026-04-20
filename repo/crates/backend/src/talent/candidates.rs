@@ -67,8 +67,14 @@ impl From<CandidateRow> for CandidateDetail {
     }
 }
 
-/// List candidates with optional TSV search + filters.
+/// List candidates with optional TSV search + filters + sort.
 /// Returns (rows, total_count).
+///
+/// Audit #10 issue #3: `sort_by` and `sort_dir` are user-selectable;
+/// both must already have been validated against the whitelists in
+/// `crate::talent::search` (the handler rejects unknown tokens with a
+/// 400 before calling this function). Unknown values fall back to the
+/// safe default `last_active_at DESC`.
 #[allow(clippy::too_many_arguments)]
 pub async fn list(
     pool: &PgPool,
@@ -79,12 +85,14 @@ pub async fn list(
     major: Option<&str>,
     min_education: Option<&str>,
     availability: Option<&str>,
+    sort_by: Option<&str>,
+    sort_dir: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<CandidateRow>, i64), AppError> {
     let rows = build_list_query(
-        pool, q, skills_filter, min_years, location, major, min_education, availability, limit,
-        offset,
+        pool, q, skills_filter, min_years, location, major, min_education, availability,
+        sort_by, sort_dir, limit, offset,
     )
     .await?;
     let total = build_count_query(
@@ -92,6 +100,24 @@ pub async fn list(
     )
     .await?;
     Ok((rows, total))
+}
+
+/// Emit a safe ORDER BY clause for a user-selected (column, direction)
+/// pair. The column is re-matched against a hard-coded whitelist here
+/// so no untrusted identifier reaches SQL even if a caller forgets the
+/// handler-level validation. Falls back to `last_active_at DESC` on
+/// unknown values.
+fn order_by_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> &'static str {
+    let dir_desc = matches!(sort_dir.map(|s| s.to_ascii_lowercase()).as_deref(), Some("desc") | None);
+    match sort_by.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("created_at") => if dir_desc { " ORDER BY created_at DESC" } else { " ORDER BY created_at ASC" },
+        Some("updated_at") => if dir_desc { " ORDER BY updated_at DESC" } else { " ORDER BY updated_at ASC" },
+        Some("full_name") => if dir_desc { " ORDER BY full_name DESC" } else { " ORDER BY full_name ASC" },
+        Some("years_experience") => if dir_desc { " ORDER BY years_experience DESC" } else { " ORDER BY years_experience ASC" },
+        Some("completeness_score") => if dir_desc { " ORDER BY completeness_score DESC" } else { " ORDER BY completeness_score ASC" },
+        // last_active_at or anything else → safe default.
+        _ => if dir_desc { " ORDER BY last_active_at DESC" } else { " ORDER BY last_active_at ASC" },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,6 +130,8 @@ async fn build_list_query(
     major: Option<&str>,
     min_education: Option<&str>,
     availability: Option<&str>,
+    sort_by: Option<&str>,
+    sort_dir: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<CandidateRow>, AppError> {
@@ -174,7 +202,8 @@ async fn build_list_query(
         }
     }
 
-    qb.push(" ORDER BY last_active_at DESC LIMIT ");
+    qb.push(order_by_clause(sort_by, sort_dir));
+    qb.push(" LIMIT ");
     qb.push_bind(limit);
     qb.push(" OFFSET ");
     qb.push_bind(offset);

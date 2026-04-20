@@ -23,27 +23,22 @@ use crate::{
 };
 
 /// Attempt login with a locally-validated username + password (audit
-/// #4 issue 4). Returns the authenticated user row when credentials
-/// match and the account is usable.
+/// #4 issue 4; audit #10 issue 2 — username-only, no email fallback).
+/// Returns the authenticated user row when credentials match and the
+/// account is usable.
 ///
-/// For backwards compatibility during rollout, if the caller passes a
-/// value that looks like an email (contains `@`) and no user matches by
-/// username, we fall back to an email-hash lookup so pre-rollout tests
-/// and any clients still posting an email continue to work.
+/// The prompt-required login contract is **username + password**. Email
+/// values are not accepted as the login identifier on `/auth/login`;
+/// callers that pass an email-form value will get
+/// `AuthInvalidCredentials` the same as any other unknown identifier.
+/// The dummy verify preserves a uniform timing profile.
 pub async fn authenticate(
     pool: &PgPool,
-    email_hmac_key: &[u8; 32],
-    username_or_email: &str,
+    _email_hmac_key: &[u8; 32],
+    username: &str,
     password: &str,
 ) -> AppResult<UserRow> {
-    let candidate = user_svc::find_by_username(pool, username_or_email).await?;
-    let candidate = match candidate {
-        Some(u) => Some(u),
-        None if username_or_email.contains('@') => {
-            user_svc::find_by_email(pool, username_or_email, email_hmac_key).await?
-        }
-        None => None,
-    };
+    let candidate = user_svc::find_by_username(pool, username).await?;
     let Some(user) = candidate else {
         // Even on "no such user" we run a dummy argon2 verify to keep the
         // timing profile uniform. This is cheap and standard.
