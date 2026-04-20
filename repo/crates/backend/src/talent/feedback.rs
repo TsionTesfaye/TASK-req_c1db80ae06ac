@@ -56,12 +56,25 @@ pub async fn create(
     Ok(row.into())
 }
 
-/// Count total feedback records (used for cold-start detection).
-pub async fn count_total(pool: &PgPool) -> Result<i64, AppError> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*)::BIGINT FROM talent_feedback")
-            .fetch_one(pool)
-            .await?;
+/// Count feedback rows scoped to a single `(owner_id, role_id)` pair —
+/// the authoritative cold-start signal per `docs/design.md` Design
+/// Decision #13 ("`feedback_count(user, role_scope) < 10` → cold
+/// start"). Audit HIGH H2 removed the prior `count_total` global
+/// count, which let feedback authored by any user for any role
+/// move every other user+role pair out of cold-start.
+pub async fn count_scoped(
+    pool: &PgPool,
+    owner_id: Uuid,
+    role_id: Uuid,
+) -> Result<i64, AppError> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM talent_feedback \
+         WHERE owner_id = $1 AND role_id = $2",
+    )
+    .bind(owner_id)
+    .bind(role_id)
+    .fetch_one(pool)
+    .await?;
     Ok(count)
 }
 

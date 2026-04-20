@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::errors::AppResult;
+use crate::services::notifications as notif_svc;
 
 use super::rules;
 
@@ -199,16 +200,28 @@ async fn notify_alert_fired(pool: &PgPool, rule_id: Uuid, event_id: Uuid, value:
         "value": value,
     });
 
+    // Audit HIGH H1: route every notification through the single shared
+    // `services::notifications::emit` contract so subscription opt-outs,
+    // delivery-attempt rows, and retry/state observability are enforced
+    // uniformly across all producers. Direct `INSERT INTO notifications`
+    // is forbidden — `emit` is the sole publisher path.
     for u in users {
-        let _ = sqlx::query(
-            "INSERT INTO notifications (user_id, topic, title, body, payload_json) \
-             VALUES ($1, 'alert.fired', $2, $3, $4)",
+        if let Err(e) = notif_svc::emit(
+            pool,
+            u.user_id,
+            "alert.fired",
+            &title,
+            &body,
+            payload.clone(),
         )
-        .bind(u.user_id)
-        .bind(&title)
-        .bind(&body)
-        .bind(&payload)
-        .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                user_id = %u.user_id,
+                rule_id = %rule_id,
+                "alert.fired notification emit failed"
+            );
+        }
     }
 }

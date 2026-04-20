@@ -322,7 +322,13 @@ async fn get_recommendations(
 
     let role_id = q.into_inner().role_id;
     let role = roles_open::get_by_id(&state.pool, role_id).await?;
-    let total_feedback = feedback::count_total(&state.pool).await?;
+    // Audit HIGH H2: cold-start is scoped by (user, role) per
+    // docs/design.md Design Decision #13
+    // ("feedback_count(user, role_scope) < 10"). Using a global count
+    // would let unrelated feedback move this caller out of cold-start
+    // for this role.
+    let total_feedback =
+        feedback::count_scoped(&state.pool, user.0.user_id, role_id).await?;
     let cold_start = total_feedback < COLD_START_THRESHOLD;
 
     // Load ALL non-deleted candidates for scoring (bounded by 200 for perf).

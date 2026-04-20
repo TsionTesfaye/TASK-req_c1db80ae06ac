@@ -184,20 +184,12 @@ async fn t_t6_recommendations_blended_after_10_feedback() {
     .await
     .unwrap();
 
-    // Insert 10 feedback records to flip to blended scoring
+    // Audit HIGH H2: cold-start is scoped by (owner, role) per
+    // docs/design.md Design Decision #13 — so the 10 feedback rows
+    // that flip this recruiter out of cold-start must be authored by
+    // THIS recruiter AND bound to THIS role. Feedback authored by
+    // anyone else, or bound to a different role, no longer counts.
     for i in 0..10 {
-        let (fuid,): (uuid::Uuid,) = sqlx::query_as(
-            "INSERT INTO users (display_name, username, email_ciphertext, email_hash, email_mask, password_hash) \
-             VALUES ($1, $2, '\\x00'::bytea, $3, 'u***@x.com', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb') \
-             RETURNING id",
-        )
-        .bind(format!("FbUser {i}"))
-        .bind(format!("fbuser-{i}-{}", uuid::Uuid::new_v4()))
-        .bind(format!("hash{i}").as_bytes().to_vec())
-        .fetch_one(&ctx.pool)
-        .await
-        .unwrap();
-
         let cid = if i % 2 == 0 { c1_id } else { c2_id };
         sqlx::query(
             "INSERT INTO talent_feedback (candidate_id, role_id, owner_id, thumb) \
@@ -205,7 +197,7 @@ async fn t_t6_recommendations_blended_after_10_feedback() {
         )
         .bind(cid)
         .bind(role_id)
-        .bind(fuid)
+        .bind(recruiter_id)
         .execute(&ctx.pool)
         .await
         .unwrap();
@@ -229,4 +221,243 @@ async fn t_t6_recommendations_blended_after_10_feedback() {
     let reasons = candidates[0]["reasons"].as_array().unwrap();
     assert!(reasons.iter().any(|r| r.as_str().unwrap().contains("Skill match")));
     assert!(reasons.iter().any(|r| r.as_str().unwrap().contains("Experience")));
+}
+
+// ─── Audit HIGH H2 — cold-start scope isolation (user + role) ────────────────
+//
+// docs/design.md Design Decision #13 specifies
+// `feedback_count(user, role_scope) < 10` → cold start.
+// These tests prove scope isolation per the HIGH H2 verdict:
+//   * User A feedback does NOT flip User B out of cold-start.
+//   * Role A feedback does NOT flip Role B out of cold-start.
+//   * Only feedback matching BOTH axes counts.
+
+async fn seed_candidate_and_role(
+    pool: &sqlx::PgPool,
+    cand_name: &str,
+    role_title: &str,
+) -> (uuid::Uuid, uuid::Uuid) {
+    let (cid,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO candidates (full_name, email_mask, years_experience, skills, completeness_score) \
+         VALUES ($1, 'x***@x.com', 4, '{rust}', 80) RETURNING id",
+    )
+    .bind(cand_name)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let (rid,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO roles_open (title, required_skills, min_years) \
+         VALUES ($1, '{rust}', 3) RETURNING id",
+    )
+    .bind(role_title)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (cid, rid)
+}
+
+#[actix_web::test]
+async fn t_t6_cold_start_is_isolated_per_owner() {
+    // Alice has authored 10 feedback rows against role R — Alice is
+    // blended. Bob has authored none — Bob must still see cold-start
+    // for the same role.
+    let ctx = TestCtx::new().await;
+    let (alice_id, _alice_tok) =
+        authed(&ctx.pool, &ctx.keys, "h2-alice@example.com", &[Role::Recruiter]).await;
+    let (_bob_id, bob_tok) =
+        authed(&ctx.pool, &ctx.keys, "h2-bob@example.com", &[Role::Recruiter]).await;
+
+    let (cid, rid) =
+        seed_candidate_and_role(&ctx.pool, "H2-Alice-Candidate", "H2 Role Alice").await;
+
+    for _ in 0..10 {
+        sqlx::query(
+            "INSERT INTO talent_feedback (candidate_id, role_id, owner_id, thumb) \
+             VALUES ($1, $2, $3, 'up')",
+        )
+        .bind(cid)
+        .bind(rid)
+        .bind(alice_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    }
+
+    // Bob calls /recommendations for the SAME role. Under the scoped
+    // cold-start contract, Bob has zero scoped feedback → cold_start
+    // must still be true even though Alice already has 10.
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/recommendations?role_id={rid}"))
+        .insert_header(("Authorization", format!("Bearer {bob_tok}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    assert_eq!(
+        body["cold_start"], true,
+        "Bob has no scoped feedback; Alice's 10 must not move Bob out of cold-start"
+    );
+    assert_eq!(
+        body["total_feedback"].as_i64().unwrap(),
+        0,
+        "scoped count for (Bob, role) is 0 despite Alice's 10 rows"
+    );
+}
+
+#[actix_web::test]
+async fn t_t6_cold_start_is_isolated_per_role() {
+    // Alice has authored 10 feedback rows against role R_a — Alice is
+    // blended for R_a. Alice calls /recommendations for a DIFFERENT
+    // role R_b (same caller, different role) — must still be
+    // cold-start for R_b.
+    let ctx = TestCtx::new().await;
+    let (alice_id, alice_tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h2-alice-roles@example.com",
+        &[Role::Recruiter],
+    )
+    .await;
+
+    let (cid, r_a) =
+        seed_candidate_and_role(&ctx.pool, "H2-Roles-Candidate", "H2 Role A").await;
+    let (_c2, r_b) =
+        seed_candidate_and_role(&ctx.pool, "H2-Roles-Candidate-B", "H2 Role B").await;
+
+    for _ in 0..10 {
+        sqlx::query(
+            "INSERT INTO talent_feedback (candidate_id, role_id, owner_id, thumb) \
+             VALUES ($1, $2, $3, 'up')",
+        )
+        .bind(cid)
+        .bind(r_a)
+        .bind(alice_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    }
+
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+
+    // Role A: blended.
+    let req_a = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/recommendations?role_id={r_a}"))
+        .insert_header(("Authorization", format!("Bearer {alice_tok}")))
+        .to_request();
+    let res_a = test::call_service(&app, req_a).await;
+    let body_a: Value = test::read_body_json(res_a).await;
+    assert_eq!(body_a["cold_start"], false, "role A has 10 scoped rows → blended");
+
+    // Role B: still cold-start — same caller, different role.
+    let req_b = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/recommendations?role_id={r_b}"))
+        .insert_header(("Authorization", format!("Bearer {alice_tok}")))
+        .to_request();
+    let res_b = test::call_service(&app, req_b).await;
+    let body_b: Value = test::read_body_json(res_b).await;
+    assert_eq!(
+        body_b["cold_start"], true,
+        "role B has 0 scoped rows for Alice; role A's 10 must not spill over"
+    );
+    assert_eq!(body_b["total_feedback"].as_i64().unwrap(), 0);
+}
+
+#[actix_web::test]
+async fn t_t6_cold_start_only_scoped_feedback_triggers_transition() {
+    // Exactly-at-threshold: 9 scoped rows → still cold-start. 10 → blended.
+    // Additional noise rows (other users, other roles) must not shift
+    // the transition.
+    let ctx = TestCtx::new().await;
+    let (me_id, my_tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h2-threshold@example.com",
+        &[Role::Recruiter],
+    )
+    .await;
+    let (other_id, _other_tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h2-threshold-other@example.com",
+        &[Role::Recruiter],
+    )
+    .await;
+
+    let (cid, my_role) =
+        seed_candidate_and_role(&ctx.pool, "H2-Thresh-Candidate", "H2 Thresh Role").await;
+    let (_c2, other_role) =
+        seed_candidate_and_role(&ctx.pool, "H2-Thresh-Candidate-2", "H2 Thresh Role Other")
+            .await;
+
+    // Noise: 50 rows authored by "other" and/or bound to "other_role".
+    // None of these are scoped to (me_id, my_role).
+    for i in 0..50 {
+        let (own, rle) = match i % 3 {
+            0 => (other_id, my_role),
+            1 => (me_id, other_role),
+            _ => (other_id, other_role),
+        };
+        sqlx::query(
+            "INSERT INTO talent_feedback (candidate_id, role_id, owner_id, thumb) \
+             VALUES ($1, $2, $3, 'up')",
+        )
+        .bind(cid)
+        .bind(rle)
+        .bind(own)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    }
+
+    // Add exactly 9 scoped rows — must stay cold-start.
+    for _ in 0..9 {
+        sqlx::query(
+            "INSERT INTO talent_feedback (candidate_id, role_id, owner_id, thumb) \
+             VALUES ($1, $2, $3, 'up')",
+        )
+        .bind(cid)
+        .bind(my_role)
+        .bind(me_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    }
+
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/recommendations?role_id={my_role}"))
+        .insert_header(("Authorization", format!("Bearer {my_tok}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    let body: Value = test::read_body_json(res).await;
+    assert_eq!(
+        body["cold_start"], true,
+        "9 scoped rows + 50 unrelated must still be cold-start"
+    );
+    assert_eq!(body["total_feedback"].as_i64().unwrap(), 9);
+
+    // Add the 10th scoped row — transition occurs only now.
+    sqlx::query(
+        "INSERT INTO talent_feedback (candidate_id, role_id, owner_id, thumb) \
+         VALUES ($1, $2, $3, 'up')",
+    )
+    .bind(cid)
+    .bind(my_role)
+    .bind(me_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
+    let req2 = test::TestRequest::get()
+        .uri(&format!("/api/v1/talent/recommendations?role_id={my_role}"))
+        .insert_header(("Authorization", format!("Bearer {my_tok}")))
+        .to_request();
+    let res2 = test::call_service(&app, req2).await;
+    let body2: Value = test::read_body_json(res2).await;
+    assert_eq!(
+        body2["cold_start"], false,
+        "10th scoped row flips transition; unrelated rows never did"
+    );
+    assert_eq!(body2["total_feedback"].as_i64().unwrap(), 10);
 }

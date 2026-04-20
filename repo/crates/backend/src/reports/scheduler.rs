@@ -362,14 +362,28 @@ pub(crate) async fn build_report_data(
 }
 
 /// Insert a completion notification for the report owner.
+///
+/// Audit HIGH H1: must go through the single shared
+/// `services::notifications::emit` contract so subscription opt-outs,
+/// delivery-attempt rows, and retry/state observability are enforced
+/// uniformly across every producer. Direct `INSERT INTO notifications`
+/// is forbidden — `emit` is the sole publisher path.
 async fn notify_owner(pool: &PgPool, owner_id: Uuid, job_id: Uuid, artifact_path: &str) {
-    let _ = sqlx::query(
-        "INSERT INTO notifications (user_id, topic, title, body, payload_json) \
-         VALUES ($1, 'report.done', 'Report ready', $2, $3)",
+    if let Err(e) = crate::services::notifications::emit(
+        pool,
+        owner_id,
+        "report.done",
+        "Report ready",
+        &format!("Your report job {} has completed.", job_id),
+        serde_json::json!({ "job_id": job_id, "artifact_path": artifact_path }),
     )
-    .bind(owner_id)
-    .bind(format!("Your report job {} has completed.", job_id))
-    .bind(serde_json::json!({ "job_id": job_id, "artifact_path": artifact_path }))
-    .execute(pool)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            error = %e,
+            owner_id = %owner_id,
+            job_id = %job_id,
+            "report.done notification emit failed"
+        );
+    }
 }

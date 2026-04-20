@@ -207,10 +207,22 @@ async fn t_p12_delete_image_requires_write_perm() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
+// Audit HIGH H3: P13 is canonically `SIGNED` (capability URL), not
+// `AUTH`. No bearer is required or accepted — the HMAC-bound
+// `?u=<uuid>&exp=<unix>&sig=<hex>` query string itself is the
+// capability. Without any signed-URL parameters the handler
+// rejects with 403 FORBIDDEN (missing signed URL parameters),
+// NOT 401 UNAUTHORIZED. This is the single canonical contract;
+// bearer-requiring wording is forbidden.
 #[actix_web::test]
-async fn t_p13_serve_image_requires_auth() {
+async fn t_p13_serve_image_is_signed_capability_only() {
     let s = unauth_status("GET", "/api/v1/images/00000000-0000-0000-0000-000000000001").await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "P13 is SIGNED-only: no bearer required, no bearer accepted; \
+         missing signed-URL params must produce 403, not 401"
+    );
 }
 
 #[actix_web::test]

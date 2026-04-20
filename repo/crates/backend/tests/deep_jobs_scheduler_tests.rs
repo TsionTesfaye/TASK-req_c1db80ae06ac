@@ -570,3 +570,282 @@ async fn deep_alerts_evaluator_operator_matrix() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Audit HIGH H1 — notification producers MUST route through
+// `services::notifications::emit`. The evidence was:
+//   * `alerts/evaluator.rs` fired notifications via a raw INSERT loop,
+//   * `reports/scheduler.rs` fired via `notify_owner` with a raw INSERT,
+// both bypassing subscription opt-out checks and the shared
+// `notification_delivery_attempts` rows. The following tests prove both
+// producers now go through `emit` — they respect subscriptions and they
+// record a delivery attempt per notification.
+// ---------------------------------------------------------------------------
+#[actix_web::test]
+async fn h1_alert_producer_routes_through_emit_and_records_attempt() {
+    let ctx = TestCtx::new().await;
+    // Creator with Administrator (owns the rule).
+    let (creator, _tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h1-alert-admin@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+    // A dedicated alert.ack recipient (Analyst has alert.ack permission).
+    let (recipient, _tok2) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h1-alert-recipient@example.com",
+        &[Role::Analyst],
+    )
+    .await;
+
+    let def_id = seed_metric_def(&ctx.pool, "moving_average").await;
+    let rule = rules::create_rule(&ctx.pool, def_id, 10.0, ">", 0, "warning", creator)
+        .await
+        .unwrap();
+
+    insert_computation(&ctx.pool, def_id, 99.0, Utc::now()).await;
+    evaluator::evaluate_all(&ctx.pool).await.unwrap();
+
+    // Recipient got exactly one alert.fired notification.
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notifications \
+         WHERE user_id = $1 AND topic = 'alert.fired'",
+    )
+    .bind(recipient)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "alert producer must emit notification for alert.ack recipient");
+
+    // And a delivery_attempts row exists for that notification.
+    let (attempt_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notification_delivery_attempts nda \
+         JOIN notifications n ON n.id = nda.notification_id \
+         WHERE n.user_id = $1 AND n.topic = 'alert.fired'",
+    )
+    .bind(recipient)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(attempt_count, 1, "alert producer must create a delivery_attempts row via emit");
+
+    // Attempt state observable and non-null.
+    let (state,): (String,) = sqlx::query_as(
+        "SELECT nda.state FROM notification_delivery_attempts nda \
+         JOIN notifications n ON n.id = nda.notification_id \
+         WHERE n.user_id = $1 AND n.topic = 'alert.fired' LIMIT 1",
+    )
+    .bind(recipient)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert!(!state.is_empty(), "delivery attempt state must be observable");
+
+    // Sanity: the rule actually fired.
+    assert!(rules::has_active_event(&ctx.pool, rule.id).await.unwrap());
+}
+
+#[actix_web::test]
+async fn h1_alert_producer_respects_subscription_optout() {
+    let ctx = TestCtx::new().await;
+    let (creator, _tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h1-alert-optout-admin@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+    let (recipient, _tok2) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h1-alert-optout-recipient@example.com",
+        &[Role::Analyst],
+    )
+    .await;
+
+    // Recipient explicitly opts out of alert.fired.
+    sqlx::query(
+        "INSERT INTO notification_subscriptions (user_id, topic, enabled) \
+         VALUES ($1, 'alert.fired', FALSE)",
+    )
+    .bind(recipient)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
+    let def_id = seed_metric_def(&ctx.pool, "moving_average").await;
+    let _rule = rules::create_rule(&ctx.pool, def_id, 10.0, ">", 0, "warning", creator)
+        .await
+        .unwrap();
+    insert_computation(&ctx.pool, def_id, 99.0, Utc::now()).await;
+    evaluator::evaluate_all(&ctx.pool).await.unwrap();
+
+    // Zero rows for opted-out recipient — proves `emit` gate is on the path.
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notifications \
+         WHERE user_id = $1 AND topic = 'alert.fired'",
+    )
+    .bind(recipient)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 0, "opted-out user must receive zero notifications from alert producer");
+
+    // And no delivery_attempts rows for them.
+    let (a,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notification_delivery_attempts nda \
+         JOIN notifications n ON n.id = nda.notification_id \
+         WHERE n.user_id = $1",
+    )
+    .bind(recipient)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(a, 0);
+}
+
+#[actix_web::test]
+async fn h1_report_producer_routes_through_emit_and_records_attempt() {
+    let ctx = TestCtx::new().await;
+    let (owner, _tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h1-report-owner@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+
+    // Seed one scheduled report job.
+    let def_id = seed_metric_def(&ctx.pool, "moving_average").await;
+    insert_computation(&ctx.pool, def_id, 42.0, Utc::now()).await;
+    sqlx::query(
+        "INSERT INTO report_jobs (owner_id, kind, format, params, status, retry_count) \
+         VALUES ($1, 'kpi_summary', 'csv', '{}', 'scheduled', 0)",
+    )
+    .bind(owner)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
+    let runtime_dir =
+        PathBuf::from(format!("/tmp/terraops-test-h1-report-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+
+    reports::scheduler::run_due_jobs(&ctx.pool, &runtime_dir)
+        .await
+        .unwrap();
+
+    // Owner got exactly one report.done notification.
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notifications \
+         WHERE user_id = $1 AND topic = 'report.done'",
+    )
+    .bind(owner)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "report producer must emit notification to owner");
+
+    // Delivery attempt row exists.
+    let (a,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notification_delivery_attempts nda \
+         JOIN notifications n ON n.id = nda.notification_id \
+         WHERE n.user_id = $1 AND n.topic = 'report.done'",
+    )
+    .bind(owner)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(a, 1, "report producer must create delivery_attempts row via emit");
+
+    // Attempt state observable.
+    let (state, attempt_no): (String, i32) = sqlx::query_as(
+        "SELECT nda.state, nda.attempt_no FROM notification_delivery_attempts nda \
+         JOIN notifications n ON n.id = nda.notification_id \
+         WHERE n.user_id = $1 AND n.topic = 'report.done' LIMIT 1",
+    )
+    .bind(owner)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert!(!state.is_empty());
+    assert!(attempt_no >= 1, "attempt_no must be observable (retry state)");
+
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+}
+
+#[actix_web::test]
+async fn h1_report_producer_respects_subscription_optout() {
+    let ctx = TestCtx::new().await;
+    let (owner, _tok) = authed(
+        &ctx.pool,
+        &ctx.keys,
+        "h1-report-optout-owner@example.com",
+        &[Role::Administrator],
+    )
+    .await;
+
+    // Owner opts out of report.done.
+    sqlx::query(
+        "INSERT INTO notification_subscriptions (user_id, topic, enabled) \
+         VALUES ($1, 'report.done', FALSE)",
+    )
+    .bind(owner)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
+    let def_id = seed_metric_def(&ctx.pool, "moving_average").await;
+    insert_computation(&ctx.pool, def_id, 42.0, Utc::now()).await;
+    sqlx::query(
+        "INSERT INTO report_jobs (owner_id, kind, format, params, status, retry_count) \
+         VALUES ($1, 'kpi_summary', 'csv', '{}', 'scheduled', 0)",
+    )
+    .bind(owner)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+
+    let runtime_dir =
+        PathBuf::from(format!("/tmp/terraops-test-h1-report-optout-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    reports::scheduler::run_due_jobs(&ctx.pool, &runtime_dir)
+        .await
+        .unwrap();
+
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notifications \
+         WHERE user_id = $1 AND topic = 'report.done'",
+    )
+    .bind(owner)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 0, "opted-out owner must receive zero report.done notifications");
+
+    let (a,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM notification_delivery_attempts nda \
+         JOIN notifications n ON n.id = nda.notification_id \
+         WHERE n.user_id = $1",
+    )
+    .bind(owner)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(a, 0);
+
+    // Sanity: the job itself still completed normally.
+    let (status,): (String,) = sqlx::query_as(
+        "SELECT status FROM report_jobs WHERE owner_id = $1 LIMIT 1",
+    )
+    .bind(owner)
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "done");
+
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+}
