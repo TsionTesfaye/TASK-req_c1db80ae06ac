@@ -33,6 +33,9 @@ Intelligence backend packages**, **plus P3 cross-domain integration
   recommendations T6 (cold-start below 10 feedback datapoints → recency +
   completeness; blended thereafter with self-scoped weights), self-scoped
   weights T7–T8, scoped feedback T9, self-scoped watchlists T10–T13.
+  Weights (T7/T8) and watchlists (T10–T13) require `talent.read` in
+  addition to SELF-ownership — ordinary RegularUsers cannot read or
+  mutate the recruiter-scoped talent surface.
 - **P3 — Integration** — `crates/backend/src/jobs/` starts five tokio
   background loops from `app::run` at server boot: the 30-second alert
   evaluator, the 10-second report scheduler, an hourly retention sweep

@@ -6,13 +6,20 @@
 //!   T4  GET    /api/v1/talent/roles              PERM(talent.read)
 //!   T5  POST   /api/v1/talent/roles              PERM(talent.manage)
 //!   T6  GET    /api/v1/talent/recommendations    PERM(talent.read) ?role_id=
-//!   T7  GET    /api/v1/talent/weights            SELF
-//!   T8  PUT    /api/v1/talent/weights            SELF
+//!   T7  GET    /api/v1/talent/weights            PERM(talent.read) + SELF
+//!   T8  PUT    /api/v1/talent/weights            PERM(talent.read) + SELF
 //!   T9  POST   /api/v1/talent/feedback           PERM(talent.feedback)
-//!   T10 GET    /api/v1/talent/watchlists         SELF
-//!   T11 POST   /api/v1/talent/watchlists         SELF
-//!   T12 POST   /api/v1/talent/watchlists/{id}/items  SELF
-//!   T13 DELETE /api/v1/talent/watchlists/{id}/items/{cid}  SELF
+//!   T10 GET    /api/v1/talent/watchlists         PERM(talent.read) + SELF
+//!   T11 POST   /api/v1/talent/watchlists         PERM(talent.read) + SELF
+//!   T12 POST   /api/v1/talent/watchlists/{id}/items   PERM(talent.read) + SELF
+//!   T13 DELETE /api/v1/talent/watchlists/{id}/items/{cid}  PERM(talent.read) + SELF
+//!
+//! Audit #6 Issue #1: weights + watchlists were previously only
+//! authentication-gated. Every ordinary authenticated user could read
+//! and mutate talent weights/watchlists even without the recruiter
+//! permission bundle. T7/T8/T10-T13 now require `talent.read` before
+//! the SELF-ownership check runs, which matches the recruiter role
+//! boundary documented in `docs/design.md`.
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::Utc;
@@ -314,6 +321,7 @@ async fn get_weights(
     user: AuthUser,
     state: web::Data<AppState>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let w = weights::get(&state.pool, user.0.user_id).await?;
     Ok(HttpResponse::Ok().json(w))
 }
@@ -325,6 +333,7 @@ async fn put_weights(
     state: web::Data<AppState>,
     body: web::Json<UpdateWeightsRequest>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let w = weights::upsert(&state.pool, user.0.user_id, &body.into_inner()).await?;
     Ok(HttpResponse::Ok().json(w))
 }
@@ -347,6 +356,7 @@ async fn list_watchlists(
     user: AuthUser,
     state: web::Data<AppState>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let items = watchlists::list(&state.pool, user.0.user_id).await?;
     Ok(HttpResponse::Ok().json(items))
 }
@@ -358,6 +368,7 @@ async fn create_watchlist(
     state: web::Data<AppState>,
     body: web::Json<CreateWatchlistRequest>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let item = watchlists::create(&state.pool, user.0.user_id, &body.into_inner().name).await?;
     Ok(HttpResponse::Created().json(item))
 }
@@ -369,6 +380,7 @@ async fn list_watchlist_items(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let watchlist_id = path.into_inner();
     watchlists::assert_owner(&state.pool, watchlist_id, user.0.user_id).await?;
     let entries = watchlists::list_items(&state.pool, watchlist_id).await?;
@@ -383,6 +395,7 @@ async fn add_watchlist_item(
     path: web::Path<Uuid>,
     body: web::Json<AddWatchlistItemRequest>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let watchlist_id = path.into_inner();
     watchlists::assert_owner(&state.pool, watchlist_id, user.0.user_id).await?;
     watchlists::add_item(&state.pool, watchlist_id, body.into_inner().candidate_id).await?;
@@ -396,6 +409,7 @@ async fn remove_watchlist_item(
     state: web::Data<AppState>,
     path: web::Path<(Uuid, Uuid)>,
 ) -> AppResult<impl Responder> {
+    require_permission(&user.0, "talent.read")?;
     let (watchlist_id, candidate_id) = path.into_inner();
     watchlists::assert_owner(&state.pool, watchlist_id, user.0.user_id).await?;
     watchlists::remove_item(&state.pool, watchlist_id, candidate_id).await?;

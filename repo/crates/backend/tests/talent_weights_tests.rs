@@ -165,3 +165,70 @@ async fn t_t8_put_weights_scoped_self_only() {
     let body: Value = test::read_body_json(res).await;
     assert_eq!(body["skills_weight"], 40); // default
 }
+
+// ── Audit #6 Issue #1: T7/T8 must require `talent.read` ──────────────────────
+// Before the fix, any authenticated user — including a bare RegularUser —
+// could read and mutate talent weights. After the fix, callers without
+// `talent.read` (the permission held by Recruiter + Administrator) are
+// refused with 403 at the handler layer.
+
+#[actix_web::test]
+async fn t_t7_get_weights_forbidden_without_talent_read() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) =
+        authed(&ctx.pool, &ctx.keys, "t7rbac@example.com", &[Role::RegularUser]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/weights")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
+async fn t_t8_put_weights_forbidden_without_talent_read() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) =
+        authed(&ctx.pool, &ctx.keys, "t8rbac@example.com", &[Role::RegularUser]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::put()
+        .uri("/api/v1/talent/weights")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .set_json(json!({
+            "skills_weight": 40, "experience_weight": 30,
+            "recency_weight": 15, "completeness_weight": 15
+        }))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
+async fn t_t10_list_watchlists_forbidden_without_talent_read() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) =
+        authed(&ctx.pool, &ctx.keys, "t10rbac@example.com", &[Role::RegularUser]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/watchlists")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
+async fn t_t11_create_watchlist_forbidden_without_talent_read() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) =
+        authed(&ctx.pool, &ctx.keys, "t11rbac@example.com", &[Role::RegularUser]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::post()
+        .uri("/api/v1/talent/watchlists")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .set_json(json!({ "name": "denied" }))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}

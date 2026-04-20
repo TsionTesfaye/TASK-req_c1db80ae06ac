@@ -301,6 +301,58 @@ fn render_toast(t: &Toast, dismiss: Callback<u64>) -> Html {
 }
 
 // ---------------------------------------------------------------------------
+// Server-side pager — Prev/Next + position readout for list surfaces that
+// request incremental pages from the backend (Audit #6 Issue #3).
+//
+// The owning body holds a `page: u32` state and a `page_size: u32` state
+// and refetches whenever either changes. This component only renders the
+// controls; all state mutation flows back through the supplied callbacks.
+// ---------------------------------------------------------------------------
+
+#[derive(Properties, PartialEq)]
+pub struct ServerPagerProps {
+    /// 1-based current page.
+    pub page: u32,
+    pub page_size: u32,
+    /// `None` when the backend did not report a total (e.g. missing
+    /// `X-Total-Count` header). In that case we still render Next on the
+    /// assumption that more rows may exist; Prev is gated by `page > 1`.
+    #[prop_or_default]
+    pub total: Option<u64>,
+    pub on_prev: Callback<MouseEvent>,
+    pub on_next: Callback<MouseEvent>,
+}
+
+#[function_component(ServerPager)]
+pub fn server_pager(props: &ServerPagerProps) -> Html {
+    let page = props.page.max(1);
+    let page_size = props.page_size.max(1) as u64;
+    let (label, at_end) = match props.total {
+        Some(total) => {
+            let last_page = ((total + page_size - 1) / page_size).max(1) as u32;
+            let start = ((page as u64 - 1) * page_size + 1).min(total.max(1));
+            let end = ((page as u64) * page_size).min(total);
+            (
+                format!("{}–{} of {} (page {}/{})", start, end, total, page, last_page),
+                page >= last_page,
+            )
+        }
+        None => (format!("Page {}", page), false),
+    };
+    html! {
+        <div class="tx-pager">
+            <button class="tx-btn tx-btn--ghost" onclick={props.on_prev.clone()} disabled={page <= 1}>
+                { "Prev" }
+            </button>
+            <span class="tx-subtle">{ label }</span>
+            <button class="tx-btn tx-btn--ghost" onclick={props.on_next.clone()} disabled={at_end}>
+                { "Next" }
+            </button>
+        </div>
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Simple paginated table primitive
 // ---------------------------------------------------------------------------
 

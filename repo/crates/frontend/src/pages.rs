@@ -26,6 +26,7 @@ use yew_router::prelude::*;
 use crate::api::ApiClient;
 use crate::components::{
     DataTable, Layout, PermGate, PlaceholderEmpty, PlaceholderError, PlaceholderLoading,
+    ServerPager,
 };
 use crate::router::Route;
 use crate::state::{AuthContext, AuthState, ToastContext};
@@ -1501,6 +1502,10 @@ pub mod data_steward {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let list = use_state(|| LoadState::<Vec<ProductListItem>>::Loading);
+        // Audit #6 Issue #3: server pagination state.
+        let page = use_state(|| 1u32);
+        let page_size: u32 = 50;
+        let total = use_state(|| Option::<u64>::None);
 
         let sku = use_state(String::new);
         let name = use_state(String::new);
@@ -1514,19 +1519,40 @@ pub mod data_steward {
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
+            let total = total.clone();
+            let page = page.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
+                let total = total.clone();
+                let qs = format!("page={}&page_size={}", *page, 50);
                 list.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
-                    match api.list_products().await {
-                        Ok(v) => list.set(LoadState::Loaded(v)),
+                    match api.list_products_page_query(&qs).await {
+                        Ok(p) => {
+                            total.set(Some(p.total));
+                            list.set(LoadState::Loaded(p.items));
+                        }
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
         };
-        { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
+        {
+            let r = reload.clone();
+            let p = *page;
+            use_effect_with(p, move |_| { r.emit(()); || () });
+        }
+        let on_prev = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| {
+                if *page > 1 { page.set(*page - 1); }
+            })
+        };
+        let on_next = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| { page.set(*page + 1); })
+        };
 
         let on_sku = {
             let sku = sku.clone();
@@ -1693,7 +1719,11 @@ pub mod data_steward {
                         html! { <span class="tx-mono">{ format_ts(p.updated_at) }</span> },
                     ]
                 }).collect();
-                html! { <DataTable headers={headers} rows={trows} empty_label="No products."/> }
+                html! { <>
+                    <DataTable headers={headers} rows={trows} empty_label="No products."/>
+                    <ServerPager page={*page} page_size={page_size} total={*total}
+                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                </> }
             }
         };
 
@@ -2381,22 +2411,46 @@ pub mod analyst {
     fn observations_body() -> Html {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let list = use_state(|| LoadState::<Vec<ObservationDto>>::Loading);
+        // Audit #6 Issue #3: server pagination.
+        let page = use_state(|| 1u32);
+        let page_size: u32 = 50;
+        let total = use_state(|| Option::<u64>::None);
+
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
+            let total = total.clone();
+            let page = page.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
+                let total = total.clone();
+                let qs = format!("page={}&page_size={}", *page, 50);
                 list.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
-                    match api.list_observations("").await {
-                        Ok(v) => list.set(LoadState::Loaded(v)),
+                    match api.list_observations_page(&qs).await {
+                        Ok(p) => {
+                            total.set(Some(p.total));
+                            list.set(LoadState::Loaded(p.items));
+                        }
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
         };
-        { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
+        {
+            let r = reload.clone();
+            let p = *page;
+            use_effect_with(p, move |_| { r.emit(()); || () });
+        }
+        let on_prev = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| { if *page > 1 { page.set(*page - 1); } })
+        };
+        let on_next = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| { page.set(*page + 1); })
+        };
 
         match &*list {
             LoadState::Loading => html! { <PlaceholderLoading/> },
@@ -2415,7 +2469,11 @@ pub mod analyst {
                     html! { { format!("{:.3}", o.value) } },
                     html! { { o.unit.clone() } },
                 ]).collect();
-                html! { <DataTable headers={headers} rows={trows} empty_label="No observations yet."/> }
+                html! { <>
+                    <DataTable headers={headers} rows={trows} empty_label="No observations yet."/>
+                    <ServerPager page={*page} page_size={page_size} total={*total}
+                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                </> }
             }
         }
     }
@@ -3049,6 +3107,23 @@ pub mod analyst {
         let site_id = use_state(String::new);
         let department_id = use_state(String::new);
         let category = use_state(String::new);
+        // Audit #6 Issue #2: replace raw site/department UUID text entry
+        // with live selectors sourced from the ref-data endpoints.
+        let sites = use_state(|| Vec::<terraops_shared::dto::ref_data::SiteRef>::new());
+        let depts = use_state(|| Vec::<terraops_shared::dto::ref_data::DepartmentRef>::new());
+        {
+            let auth = auth.clone();
+            let sites = sites.clone();
+            let depts = depts.clone();
+            use_effect_with((), move |_| {
+                let api = auth.api();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(v) = api.list_sites().await { sites.set(v); }
+                    if let Ok(v) = api.list_departments().await { depts.set(v); }
+                });
+                || ()
+            });
+        }
 
         let build_qs = {
             let from_ts = from_ts.clone();
@@ -3148,16 +3223,44 @@ pub mod analyst {
                             oninput={bind_input(to_ts.clone())}/>
                     </label>
                     <label class="tx-field">
-                        <span>{ "Site (UUID, optional)" }</span>
-                        <input class="tx-input" type="text" value={(*site_id).clone()}
-                            placeholder="site uuid"
-                            oninput={bind_input(site_id.clone())}/>
+                        <span>{ "Site" }</span>
+                        <select class="tx-input" onchange={{
+                            let s = site_id.clone();
+                            Callback::from(move |e: Event| {
+                                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                                s.set(t.value());
+                            })
+                        }}>
+                            <option value="" selected={(*site_id).is_empty()}>{ "— all sites —" }</option>
+                            { for sites.iter().map(|s| {
+                                let id_s = s.id.to_string();
+                                let sel = *site_id == id_s;
+                                html! { <option value={id_s.clone()} selected={sel}>
+                                    { format!("{} · {}", s.code, s.name) }
+                                </option> }
+                            }) }
+                        </select>
                     </label>
                     <label class="tx-field">
-                        <span>{ "Department (UUID, optional)" }</span>
-                        <input class="tx-input" type="text" value={(*department_id).clone()}
-                            placeholder="department uuid"
-                            oninput={bind_input(department_id.clone())}/>
+                        <span>{ "Department" }</span>
+                        <select class="tx-input" onchange={{
+                            let d = department_id.clone();
+                            Callback::from(move |e: Event| {
+                                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                                d.set(t.value());
+                            })
+                        }}>
+                            <option value="" selected={(*department_id).is_empty()}>{ "— all departments —" }</option>
+                            { for depts.iter().filter(|d| {
+                                (*site_id).is_empty() || d.site_id.to_string() == *site_id
+                            }).map(|d| {
+                                let id_s = d.id.to_string();
+                                let sel = *department_id == id_s;
+                                html! { <option value={id_s.clone()} selected={sel}>
+                                    { format!("{} · {}", d.code, d.name) }
+                                </option> }
+                            }) }
+                        </select>
                     </label>
                     <label class="tx-field">
                         <span>{ "Category (optional)" }</span>
@@ -3365,6 +3468,9 @@ pub mod analyst {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let list = use_state(|| LoadState::<Vec<AlertRuleDto>>::Loading);
+        // Audit #6 Issue #2: replace raw UUID text entry with a business-
+        // facing selector backed by live metric definitions.
+        let defs = use_state(|| Vec::<MetricDefinitionDto>::new());
         let metric_id = use_state(String::new);
         let threshold = use_state(String::new);
         let op = use_state(|| ">".to_string());
@@ -3392,10 +3498,29 @@ pub mod analyst {
         };
         { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
 
+        // Load metric definitions once for the dropdown selector.
+        {
+            let auth = auth.clone();
+            let defs = defs.clone();
+            let metric_id = metric_id.clone();
+            use_effect_with((), move |_| {
+                let api = auth.api();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(v) = api.list_metric_definitions().await {
+                        if metric_id.is_empty() {
+                            if let Some(first) = v.first() { metric_id.set(first.id.to_string()); }
+                        }
+                        defs.set(v);
+                    }
+                });
+                || ()
+            });
+        }
+
         let on_mid = {
             let metric_id = metric_id.clone();
-            Callback::from(move |e: InputEvent| {
-                let t: HtmlInputElement = e.target_unchecked_into();
+            Callback::from(move |e: Event| {
+                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
                 metric_id.set(t.value());
             })
         };
@@ -3480,8 +3605,21 @@ pub mod analyst {
             <section class="tx-card">
                 <h2 class="tx-title tx-title--sm">{ "New rule" }</h2>
                 <form class="tx-form tx-form--row" onsubmit={on_create}>
-                    <input class="tx-input" placeholder="metric_definition_id (UUID)"
-                           required=true value={(*metric_id).clone()} oninput={on_mid}/>
+                    <select class="tx-input" required=true onchange={on_mid}>
+                        if defs.is_empty() {
+                            <option value="" selected=true>{ "No metric definitions yet" }</option>
+                        } else {
+                            { for defs.iter().map(|d| {
+                                let id_s = d.id.to_string();
+                                let sel = *metric_id == id_s;
+                                html! {
+                                    <option value={id_s.clone()} selected={sel}>
+                                        { format!("{} · {}", d.name, d.formula_kind) }
+                                    </option>
+                                }
+                            }) }
+                        }
+                    </select>
                     <input class="tx-input" type="number" step="any"
                            placeholder="threshold" required=true
                            value={(*threshold).clone()} oninput={on_th}/>
@@ -3573,6 +3711,22 @@ pub mod analyst {
         let severity = use_state(String::new);
         let source_id = use_state(String::new);
         let definition_id = use_state(String::new);
+        // Audit #6 Issue #2: selectors instead of UUID text entry.
+        let env_sources = use_state(|| Vec::<EnvSourceDto>::new());
+        let defs = use_state(|| Vec::<MetricDefinitionDto>::new());
+        {
+            let auth = auth.clone();
+            let env_sources = env_sources.clone();
+            let defs = defs.clone();
+            use_effect_with((), move |_| {
+                let api = auth.api();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(v) = api.list_env_sources().await { env_sources.set(v); }
+                    if let Ok(v) = api.list_metric_definitions().await { defs.set(v); }
+                });
+                || ()
+            });
+        }
 
         let reload = {
             let auth = auth.clone();
@@ -3744,18 +3898,32 @@ pub mod analyst {
             },
             "env_series" => html! {
                 <label class="tx-field">
-                    <span>{ "Source ID (UUID, optional)" }</span>
-                    <input class="tx-input" type="text" value={(*source_id).clone()}
-                        placeholder="source uuid"
-                        oninput={bind_input(source_id.clone())}/>
+                    <span>{ "Environmental source" }</span>
+                    <select class="tx-input" onchange={bind_str(source_id.clone())}>
+                        <option value="" selected={(*source_id).is_empty()}>{ "— any source —" }</option>
+                        { for env_sources.iter().map(|s| {
+                            let id_s = s.id.to_string();
+                            let sel = *source_id == id_s;
+                            html! { <option value={id_s.clone()} selected={sel}>
+                                { format!("{} ({})", s.name, s.kind) }
+                            </option> }
+                        }) }
+                    </select>
                 </label>
             },
             "kpi_summary" => html! {
                 <label class="tx-field">
-                    <span>{ "Definition ID (UUID, optional)" }</span>
-                    <input class="tx-input" type="text" value={(*definition_id).clone()}
-                        placeholder="metric definition uuid"
-                        oninput={bind_input(definition_id.clone())}/>
+                    <span>{ "Metric definition" }</span>
+                    <select class="tx-input" onchange={bind_str(definition_id.clone())}>
+                        <option value="" selected={(*definition_id).is_empty()}>{ "— any definition —" }</option>
+                        { for defs.iter().map(|d| {
+                            let id_s = d.id.to_string();
+                            let sel = *definition_id == id_s;
+                            html! { <option value={id_s.clone()} selected={sel}>
+                                { format!("{} · {}", d.name, d.formula_kind) }
+                            </option> }
+                        }) }
+                    </select>
                 </label>
             },
             _ => html! {},
@@ -3935,23 +4103,46 @@ pub mod user {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let list = use_state(|| LoadState::<Vec<AlertEventDto>>::Loading);
+        // Audit #6 Issue #3: server pagination.
+        let page = use_state(|| 1u32);
+        let page_size: u32 = 50;
+        let total = use_state(|| Option::<u64>::None);
 
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
+            let total = total.clone();
+            let page = page.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
+                let total = total.clone();
+                let qs = format!("page={}&page_size={}", *page, 50);
                 list.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
-                    match api.list_alert_events().await {
-                        Ok(v) => list.set(LoadState::Loaded(v)),
+                    match api.list_alert_events_page_query(&qs).await {
+                        Ok(p) => {
+                            total.set(Some(p.total));
+                            list.set(LoadState::Loaded(p.items));
+                        }
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
         };
-        { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
+        {
+            let r = reload.clone();
+            let p = *page;
+            use_effect_with(p, move |_| { r.emit(()); || () });
+        }
+        let on_prev = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| { if *page > 1 { page.set(*page - 1); } })
+        };
+        let on_next = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| { page.set(*page + 1); })
+        };
 
         let ack = {
             let auth = auth.clone();
@@ -3999,7 +4190,11 @@ pub mod user {
                         },
                     ]
                 }).collect();
-                html! { <DataTable headers={headers} rows={trows} empty_label="No alert events yet."/> }
+                html! { <>
+                    <DataTable headers={headers} rows={trows} empty_label="No alert events yet."/>
+                    <ServerPager page={*page} page_size={page_size} total={*total}
+                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                </> }
             }
         }
     }
@@ -4032,6 +4227,12 @@ pub mod recruiter {
     fn candidates_body() -> Html {
         let auth = use_context::<AuthContext>().expect("AuthContext");
         let list = use_state(|| LoadState::<Vec<CandidateListItem>>::Loading);
+        // Server pagination (Audit #6 Issue #3): `page` is 1-based; each
+        // reload pushes `page=N&page_size=50` and re-fetches. `total`
+        // comes from the backend `X-Total-Count` response header.
+        let page = use_state(|| 1u32);
+        let page_size: u32 = 50;
+        let total = use_state(|| Option::<u64>::None);
 
         // Search / filter state. The querystring is rebuilt from these
         // fields each time the user submits the search form.
@@ -4053,6 +4254,7 @@ pub mod recruiter {
             let availability = availability.clone();
             let major = major.clone();
             let min_education = min_education.clone();
+            let page = page.clone();
             move || -> String {
                 let mut parts: Vec<String> = Vec::new();
                 let push = |p: &mut Vec<String>, k: &str, v: &str| {
@@ -4080,6 +4282,8 @@ pub mod recruiter {
                 push(&mut parts, "availability", &*availability);
                 push(&mut parts, "major", &*major);
                 push(&mut parts, "min_education", &*min_education);
+                parts.push(format!("page={}", *page));
+                parts.push(format!("page_size={}", 50));
                 parts.join("&")
             }
         };
@@ -4087,27 +4291,38 @@ pub mod recruiter {
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
+            let total = total.clone();
             let build_query = build_query.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
+                let total = total.clone();
                 let qs = build_query();
                 list.set(LoadState::Loading);
                 wasm_bindgen_futures::spawn_local(async move {
-                    match api.list_candidates_query(&qs).await {
-                        Ok(v) => list.set(LoadState::Loaded(v)),
+                    match api.list_candidates_query_paged(&qs).await {
+                        Ok((v, tot)) => {
+                            total.set(tot);
+                            list.set(LoadState::Loaded(v));
+                        }
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
                 });
             })
         };
-        { let r = reload.clone(); use_effect_with((), move |_| { r.emit(()); || () }); }
+        {
+            let r = reload.clone();
+            let p = *page;
+            use_effect_with(p, move |_| { r.emit(()); || () });
+        }
 
         let on_submit = {
             let reload = reload.clone();
+            let page = page.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
-                reload.emit(());
+                // New search → reset to page 1 (this triggers the effect).
+                if *page != 1 { page.set(1); } else { reload.emit(()); }
             })
         };
         let on_clear = {
@@ -4119,6 +4334,7 @@ pub mod recruiter {
             let major = major.clone();
             let min_education = min_education.clone();
             let reload = reload.clone();
+            let page = page.clone();
             Callback::from(move |_: MouseEvent| {
                 q_text.set(String::new());
                 skills.set(String::new());
@@ -4127,7 +4343,19 @@ pub mod recruiter {
                 availability.set(String::new());
                 major.set(String::new());
                 min_education.set(String::new());
-                reload.emit(());
+                if *page != 1 { page.set(1); } else { reload.emit(()); }
+            })
+        };
+        let on_prev = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| {
+                if *page > 1 { page.set(*page - 1); }
+            })
+        };
+        let on_next = {
+            let page = page.clone();
+            Callback::from(move |_: MouseEvent| {
+                page.set(*page + 1);
             })
         };
         let bind = |s: UseStateHandle<String>| {
@@ -4232,8 +4460,15 @@ pub mod recruiter {
                         html! { { format!("{}%", c.completeness_score) } },
                     ]
                 }).collect();
-                html! { <DataTable headers={headers} rows={trows}
-                                   empty_label="No candidates match the filters."/> }
+                let pager = html! {
+                    <ServerPager page={*page} page_size={page_size} total={*total}
+                                 on_prev={on_prev.clone()} on_next={on_next.clone()} />
+                };
+                html! { <>
+                    <DataTable headers={headers} rows={trows}
+                               empty_label="No candidates match the filters."/>
+                    { pager }
+                </> }
             }
         };
 
@@ -4605,11 +4840,31 @@ pub mod recruiter {
         let role_input = use_state(String::new);
         let result = use_state(|| LoadState::<Vec<RankedCandidate>>::Loading);
         let cold = use_state(|| None::<bool>);
+        // Audit #6 Issue #2: replace the raw role_id UUID text box with a
+        // selector backed by the live open-roles list.
+        let roles = use_state(|| Vec::<RoleOpenItem>::new());
+        {
+            let auth = auth.clone();
+            let roles = roles.clone();
+            let role_input = role_input.clone();
+            use_effect_with((), move |_| {
+                let api = auth.api();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(v) = api.list_talent_roles().await {
+                        if role_input.is_empty() {
+                            if let Some(first) = v.first() { role_input.set(first.id.to_string()); }
+                        }
+                        roles.set(v);
+                    }
+                });
+                || ()
+            });
+        }
 
         let on_role = {
             let role_input = role_input.clone();
-            Callback::from(move |e: InputEvent| {
-                let t: HtmlInputElement = e.target_unchecked_into();
+            Callback::from(move |e: Event| {
+                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
                 role_input.set(t.value());
             })
         };
@@ -4641,7 +4896,7 @@ pub mod recruiter {
         };
 
         let body = match &*result {
-            LoadState::Loading => html! { <PlaceholderEmpty label="Enter a role_id above and click Rank."/> },
+            LoadState::Loading => html! { <PlaceholderEmpty label="Pick a role above and click Rank."/> },
             LoadState::Failed(m) => html! {
                 <PlaceholderError message={AttrValue::from(m.clone())} on_retry={None::<Callback<MouseEvent>>}/>
             },
@@ -4674,7 +4929,19 @@ pub mod recruiter {
             <>
                 <section class="tx-card">
                     <form class="tx-form tx-form--row" onsubmit={Callback::from(|e: SubmitEvent| e.prevent_default())}>
-                        <input class="tx-input" placeholder="role_id (UUID)" value={(*role_input).clone()} oninput={on_role}/>
+                        <select class="tx-input" onchange={on_role}>
+                            if roles.is_empty() {
+                                <option value="" selected=true>{ "No open roles yet" }</option>
+                            } else {
+                                { for roles.iter().map(|r| {
+                                    let id_s = r.id.to_string();
+                                    let sel = *role_input == id_s;
+                                    html! { <option value={id_s.clone()} selected={sel}>
+                                        { format!("{} · {}", r.title, r.status) }
+                                    </option> }
+                                }) }
+                            }
+                        </select>
                         <button class="tx-btn" onclick={run}>{ "Rank" }</button>
                     </form>
                     if let Some(cs) = *cold {
@@ -4929,6 +5196,27 @@ pub mod recruiter {
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let items = use_state(|| LoadState::<Vec<WatchlistEntry>>::Loading);
         let new_cid = use_state(String::new);
+        // Audit #6 Issue #2: candidate selector with a simple search box
+        // that narrows the dropdown by name or skills.
+        let candidates = use_state(|| Vec::<CandidateListItem>::new());
+        let cand_filter = use_state(String::new);
+        {
+            let auth = auth.clone();
+            let candidates = candidates.clone();
+            let new_cid = new_cid.clone();
+            use_effect_with((), move |_| {
+                let api = auth.api();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(v) = api.list_candidates_query("page_size=200").await {
+                        if new_cid.is_empty() {
+                            if let Some(c) = v.first() { new_cid.set(c.id.to_string()); }
+                        }
+                        candidates.set(v);
+                    }
+                });
+                || ()
+            });
+        }
 
         let reload = {
             let auth = auth.clone();
@@ -4949,9 +5237,16 @@ pub mod recruiter {
 
         let on_new_cid = {
             let new_cid = new_cid.clone();
+            Callback::from(move |e: Event| {
+                let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                new_cid.set(t.value());
+            })
+        };
+        let on_cand_filter = {
+            let cand_filter = cand_filter.clone();
             Callback::from(move |e: InputEvent| {
                 let t: HtmlInputElement = e.target_unchecked_into();
-                new_cid.set(t.value());
+                cand_filter.set(t.value());
             })
         };
 
@@ -5004,12 +5299,33 @@ pub mod recruiter {
             })
         };
 
+        let filter_lc = cand_filter.to_lowercase();
+        let filtered: Vec<&CandidateListItem> = candidates.iter().filter(|c| {
+            if filter_lc.is_empty() { return true; }
+            c.full_name.to_lowercase().contains(&filter_lc)
+                || c.email_mask.to_lowercase().contains(&filter_lc)
+                || c.skills.iter().any(|s| s.to_lowercase().contains(&filter_lc))
+        }).collect();
         let add_card = html! {
             <section class="tx-card">
                 <h2 class="tx-title tx-title--sm">{ "Add candidate to this watchlist" }</h2>
                 <form class="tx-form tx-form--row" onsubmit={on_add}>
-                    <input class="tx-input" placeholder="candidate UUID"
-                           required=true value={(*new_cid).clone()} oninput={on_new_cid}/>
+                    <input class="tx-input" placeholder="Filter candidates (name / skill)"
+                           value={(*cand_filter).clone()} oninput={on_cand_filter}/>
+                    <select class="tx-input" required=true onchange={on_new_cid}>
+                        if filtered.is_empty() {
+                            <option value="" selected=true>{ "No matching candidates" }</option>
+                        } else {
+                            { for filtered.iter().take(200).map(|c| {
+                                let id_s = c.id.to_string();
+                                let sel = *new_cid == id_s;
+                                html! { <option value={id_s.clone()} selected={sel}>
+                                    { format!("{} · {}y · {}", c.full_name, c.years_experience,
+                                        c.skills.iter().take(3).cloned().collect::<Vec<_>>().join(", ")) }
+                                </option> }
+                            }) }
+                        }
+                    </select>
                     <button class="tx-btn" type="submit">{ "Add" }</button>
                 </form>
                 <p class="tx-subtle">

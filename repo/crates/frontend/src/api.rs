@@ -205,6 +205,29 @@ impl ApiClient {
         }
     }
 
+    /// GET variant that additionally parses the `X-Total-Count` response
+    /// header (if present). Used by server-paginated list endpoints whose
+    /// body is a bare `Vec<T>` rather than a `Page<T>` envelope — the
+    /// backend always includes `X-Total-Count` on those handlers, and the
+    /// SPA needs that total to render the server pager.
+    async fn get_with_total<T: DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<(T, Option<u64>), ApiError> {
+        let builder = RequestBuilder::new(&self.endpoint(path)).method(Method::GET);
+        let builder = self.attach_auth(builder);
+        let req = builder
+            .build()
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let res = self.send_once(req).await?;
+        let total = res
+            .headers()
+            .get("x-total-count")
+            .and_then(|s| s.parse::<u64>().ok());
+        let body = Self::decode_json::<T>(res).await?;
+        Ok((body, total))
+    }
+
     async fn get_with_retry<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let mut last_err = None;
         for attempt in 0..=GET_RETRIES {
@@ -760,6 +783,14 @@ impl ApiClient {
     pub async fn list_alert_events_page(&self) -> Result<Page<AlertEventDto>, ApiError> {
         self.get_with_retry::<Page<AlertEventDto>>("/alerts/events").await
     }
+    pub async fn list_alert_events_page_query(
+        &self,
+        query: &str,
+    ) -> Result<Page<AlertEventDto>, ApiError> {
+        let path = if query.is_empty() { "/alerts/events".to_string() }
+                   else { format!("/alerts/events?{query}") };
+        self.get_with_retry::<Page<AlertEventDto>>(&path).await
+    }
     pub async fn list_alert_events(&self) -> Result<Vec<AlertEventDto>, ApiError> {
         Ok(self.list_alert_events_page().await?.items)
     }
@@ -841,6 +872,34 @@ impl ApiClient {
             format!("/talent/candidates?{query}")
         };
         self.get_with_retry(&path).await
+    }
+    /// Server-paginated candidate listing. Returns `(items, total)` where
+    /// `total` is the `X-Total-Count` header parsed as u64. Used by the
+    /// recruiter SPA to drive the Prev/Next pager (Audit #6 Issue #3).
+    pub async fn list_candidates_query_paged(
+        &self,
+        query: &str,
+    ) -> Result<(Vec<CandidateListItem>, Option<u64>), ApiError> {
+        let path = if query.is_empty() {
+            "/talent/candidates".to_string()
+        } else {
+            format!("/talent/candidates?{query}")
+        };
+        self.get_with_total::<Vec<CandidateListItem>>(&path).await
+    }
+    /// Server-paginated role listing with free-form query string. Mirrors
+    /// `list_candidates_query_paged`; backend handler returns a bare
+    /// `Vec<RoleOpenItem>` plus `X-Total-Count`.
+    pub async fn list_talent_roles_paged(
+        &self,
+        query: &str,
+    ) -> Result<(Vec<RoleOpenItem>, Option<u64>), ApiError> {
+        let path = if query.is_empty() {
+            "/talent/roles".to_string()
+        } else {
+            format!("/talent/roles?{query}")
+        };
+        self.get_with_total::<Vec<RoleOpenItem>>(&path).await
     }
     pub async fn get_candidate(&self, id: Uuid) -> Result<CandidateDetail, ApiError> {
         self.get_with_retry(&format!("/talent/candidates/{id}")).await
