@@ -382,9 +382,8 @@ Current-scope disclosures (updated as features land):
       negatives, error envelope + email ciphertext redaction.
   Run them with `docker compose run --rm tests bash -c 'cargo test
   -p terraops-backend -- --test-threads=1'`.
-- `scripts/seed_demo.sh` now invokes `terraops-backend seed`, which is
-  idempotent and creates/updates the five demo users with the role
-  matrix above. Running it repeatedly preserves operator-set passwords.
+- Demo accounts are seeded automatically on first boot by `Dockerfile.app`'s
+  entrypoint. The role matrix above reflects the seeded state.
 - **Frontend SPA status:** P1 + P-A/B/C complete and live in `dist/`.
   The Yew SPA ships a real router, auth/toast/notifications context
   providers, permission-aware nav, a typed `ApiClient` with hard 3 s
@@ -781,4 +780,3 @@ The `develop-1` audit-#11 remediation bundle closes four findings:
   in flight. `ServerPager` has been removed.
   (`crates/frontend/src/components.rs`,
   `crates/frontend/src/pages.rs`.)
-
