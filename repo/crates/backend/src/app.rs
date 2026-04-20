@@ -28,9 +28,19 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // at startup. When `mtls_config.enforced = true`, we load the internal
     // CA bundle from the runtime volume and build the rustls server with
     // a `WebPkiClientVerifier` so any unpinned client is refused at the
-    // TLS handshake. Revocation propagates at the next process restart;
-    // the transport-layer proof lives in
+    // TLS handshake. The transport-layer proof lives in
     // `crates/backend/tests/mtls_handshake_tests.rs`.
+    //
+    // Audit #12 Issue #3 — restart-gated contract: the flag value read
+    // here is the value that ends up baked into the live
+    // `rustls::ServerConfig` below. A subsequent admin PATCH to
+    // `/security/mtls` updates `mtls_config.enforced` in the DB but
+    // does not rewrite the live TLS server — the backend must be
+    // restarted for the persisted flag to become active. We stash the
+    // startup value in `AppState.mtls_startup_enforced` so the admin
+    // endpoints can report `active_enforced` and `pending_restart`
+    // honestly instead of implying the PATCH is live. Device-cert SPKI
+    // pins still refresh live via the background refresher below.
     let mtls_enforced: bool = sqlx::query_scalar::<_, bool>(
         "SELECT enforced FROM mtls_config WHERE id = 1",
     )
@@ -73,6 +83,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         static_dir: cfg.static_dir.clone(),
         default_timezone: cfg.default_timezone.clone(),
         runtime_dir: cfg.runtime_dir.clone(),
+        // Audit #12 Issue #3: record the enforcement flag actually used
+        // to construct the rustls `ServerConfig` so admin endpoints can
+        // report an honest live-vs-persisted delta.
+        mtls_startup_enforced: mtls_enforced,
     };
 
     // Start background jobs (alert evaluator, report scheduler, retention

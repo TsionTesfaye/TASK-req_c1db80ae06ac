@@ -57,7 +57,7 @@ delivered and live in `dist/`**, **plus P3 cross-domain integration
   passing).
 
 The endpoint-parity audit (`scripts/audit_endpoints.sh`) runs in strict
-mode and reports **forward parity 114/114 (100 %)** with 0 reverse orphans
+mode and reports **forward parity 117/117 (100 %)** with 0 reverse orphans
 (one `t_<id>_*` no-mock HTTP test per authoritative endpoint in
 `docs/api-spec.md`). This 100 % is an endpoint-parity count
 (endpoints-with-tests ÷ authoritative-endpoints × 100) and is
@@ -67,7 +67,7 @@ The frontend gate (Gate 2) separately reports a **Frontend Verification
 Matrix score of 100 % (53/53 rows satisfied)**. This is a
 **requirement-row verification score**
 (`covered_rows / total_rows × 100`), **not a source-line coverage
-percentage** and **not the same quantity** as the 114/114 endpoint
+percentage** and **not the same quantity** as the 117/117 endpoint
 parity above. Wasm source-based line coverage is not the authoritative
 frontend proof on this toolchain — see "Verification Method" below and
 `docs/test-coverage.md §Why the frontend is not measured by wasm
@@ -241,7 +241,7 @@ Run the broad test gate from the repo root:
   (reverse check enforced, forward parity reported); present
   (committed at the end-of-development gate) → `strict` mode (both
   checks enforced). The marker is now present and the audit reports
-  `114/114` (100 %) forward parity with 0 reverse orphans — green.
+  `117/117` (100 %) forward parity with 0 reverse orphans — green.
 - **Flow gate** — seven Playwright specs live in `e2e/specs/`
   (`login`, `admin_ops`, `products_import`, `analyst_metric_report`,
   `alert_to_notification`, `talent_recommendations`, `offline_states`).
@@ -404,12 +404,14 @@ Current-scope disclosures (updated as features land):
   permission-gated fallback card for users without it. The
   `Dockerfile.app` ships the real Trunk + wasm-bindgen stage that
   replaces the P0 `dist-scaffold` shell.
-- All **114** REST endpoints are listed authoritatively in
-  `docs/api-spec.md` (49 P1 + 21 P-A + 31 P-B + 13 P-C, with the full
-  breakdown reproduced in the `## Totals` section). P1 shipped the 49
-  shared-foundation endpoints; P-A, P-B, and P-C now ship the remaining
-  65. The endpoint-parity audit runs in strict mode and reports
-  `114/114` forward parity with 0 reverse orphans.
+- All **117** REST endpoints are listed authoritatively in
+  `docs/api-spec.md` (51 P1 + 21 P-A + 31 P-B + 14 P-C, with the full
+  breakdown reproduced in the `## Totals` section). P1 shipped the
+  shared-foundation endpoints; P-A, P-B, and P-C now ship the remainder.
+  The endpoint-parity audit runs in strict mode and reports
+  `117/117` forward parity with 0 reverse orphans. (Audit #12 Issue #4
+  aligns this count with `docs/api-spec.md`; earlier `114` references
+  in prior-audit sections below are historical.)
 - No outbound integrations exist. TerraOps is an offline system by contract.
 - No `.env` / `.env.*` files are created or consumed by this repo. The
   Postgres bootstrap value in `docker-compose.yml` is a documented
@@ -464,7 +466,7 @@ Verification: `cargo check -p terraops-frontend --target wasm32-unknown-unknown`
 and `cargo check -p terraops-backend -p terraops-shared` are both clean
 (warnings only, all pre-existing dead-code notices). The DTO-additive
 backend change (`metric_computations.id` is now projected as
-`computation_id` on series points) preserves the 114/114 endpoint-parity
+`computation_id` on series points) preserves the endpoint-parity
 audit.
 
 ## Audit #7 Remediation — retention, history, offline cache, export slicing
@@ -590,6 +592,70 @@ findings:
   corrected from "email + password" to "username + password".
   `crates/backend/src/crypto/email.rs` clarifies that the email
   hash is used for admin lookup/uniqueness, not for login.
+
+## Audit #12 Remediation — real cron scheduling, honest report failures, restart-gated mTLS contract, parity docs
+
+The `develop-1` audit-#12 remediation bundle closes four findings:
+
+- **Report `cron` is now actually evaluated (High).** The new module
+  `crates/backend/src/reports/cron.rs` parses a POSIX-subset 5-field
+  cron expression (`* / N / A-B / A,B,C / */N / A-B/N`; Sunday is both
+  `0` and `7`; Vixie-cron dom/dow OR rule). Every scheduler tick, the
+  reports/scheduler loop now runs a "cron re-schedule pass" before the
+  failed→scheduled retry promotion: any job with a non-empty `cron`
+  sitting in `done`, `cancelled`, or terminal-`failed` state has its
+  `next_fire` computed from `last_run_at` (or `created_at` if never
+  run); if `NOW()` has reached it, the row is flipped back to
+  `scheduled` with `retry_count=0` and picked up by the normal queue.
+  Cron expressions are also validated at `POST /reports/jobs` time —
+  invalid crons return `400 invalid cron: …` instead of silently
+  sitting inert in the DB. Unit tests for the parser and `next_after`
+  live inline in `cron.rs`.
+- **Report data-assembly failures no longer masquerade as empty
+  artifacts (High).** `reports::scheduler::build_report_data` used to
+  call `.fetch_all(...).await.unwrap_or_default()` on each kind's query
+  and then happily render an empty PDF/CSV/XLSX as a "successful" job.
+  It now returns `AppResult<Vec<serde_json::Value>>` and propagates the
+  SQL error through the normal failure path. The scheduler catches the
+  error and marks the job `failed` with `retry_count+1` (so the
+  existing one-shot retry still applies); no artifact is written. This
+  closes the "silent failure produces an empty file and a green
+  notification" trap.
+- **mTLS PATCH is restart-gated, and the contract says so (High).**
+  The rustls `ServerConfig` is built once at `app::run` startup from
+  `mtls_config.enforced`. `AppState` now carries the captured startup
+  value as `mtls_startup_enforced`. `GET /security/mtls`,
+  `GET /security/mtls/status`, and `PATCH /security/mtls` all surface
+  `enforced` (persisted-desired), `active_enforced` (startup-live),
+  `pending_restart` (delta flag), and a human-readable `note`. The
+  PATCH now returns `200 OK` with that contract body (instead of the
+  old silent `204 No Content`) and emits a `tracing::warn!` when a
+  restart is required. Device-cert SPKI pins still refresh live every
+  30 s via the existing `tls::spawn_pin_refresher`. The contract is
+  stated explicitly in `crates/backend/src/tls.rs` and `app.rs`
+  module docs. Tests: `t_sec8_patch_mtls_requires_mtls_manage` and
+  `t_sec9_mtls_status_returns_cert_counts` now assert
+  `active_enforced`, `pending_restart`, and `note`.
+- **Endpoint-parity count aligned at 117/117 (Medium).** `README.md`
+  no longer advertises the stale `114/114` figure. The authoritative
+  count in `docs/api-spec.md §Totals` is `51 + 21 + 31 + 14 = 117`,
+  and the README headline + Gate 3 line + Architecture bullet all
+  read `117/117` now. Historical prior-audit sections keep their
+  `114` wording where the figure is historical to that audit.
+
+Verification (code-level; broad `./run_tests.sh` rerun deferred per the
+standing "do not rerun broad contract yet" directive):
+
+- `crates/backend/src/reports/cron.rs` inline unit tests cover
+  parse errors, `*`/range/list/step fields, daily, weekday-only,
+  unreachable-expression (`0 0 31 2 *`), and Sunday `0`/`7`
+  equivalence.
+- `t_sec8_patch_mtls_requires_mtls_manage` asserts the PATCH
+  response body carries `enforced=true`, `active_enforced=false`,
+  `pending_restart=true`, and a `note` string containing the word
+  `restart`.
+- `bash scripts/audit_endpoints.sh` strict mode remains green at
+  `117/117` (Issue #4 was docs-only; no endpoint signatures changed).
 
 ## Audit #11 Remediation — signed-URL user binding, SW cache isolation, local-TZ display, incremental loading
 

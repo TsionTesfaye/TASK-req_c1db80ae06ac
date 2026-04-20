@@ -17,6 +17,17 @@
 //! it into the live `ClientCertVerifier` atomically via `RwLock`. The next
 //! handshake observes the new pin set — no server restart required.
 //!
+//! Restart-gated behavior (Audit #12 Issue #3): the *top-level* mode
+//! choice (one-way TLS vs. mTLS+pin verifier) is decided once at
+//! `app::run` startup from `mtls_config.enforced` and baked into the
+//! `rustls::ServerConfig` used by `HttpServer::bind_rustls_0_22`. A later
+//! admin PATCH to `/security/mtls` is persisted to the DB and audited,
+//! but it does NOT flip the live server config in place — the backend
+//! must be restarted for the persisted flag to become the live TLS
+//! mode. Device-cert pin refresh remains live as described above.
+//! Admin endpoints surface this honestly via `active_enforced` and
+//! `pending_restart`.
+//!
 //! Transport-layer refusal proof for the pinned-CA chain path lives in
 //! `crates/backend/tests/mtls_handshake_tests.rs`. SPKI extraction is
 //! covered by `mod spki_tests` at the bottom of this file.

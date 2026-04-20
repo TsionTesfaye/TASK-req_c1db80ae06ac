@@ -1,5 +1,6 @@
 //! Report jobs: scheduler, PDF/CSV/XLSX rendering, route handlers (RP1–RP6).
 
+pub mod cron;
 pub mod csv;
 pub mod handlers;
 pub mod pdf;

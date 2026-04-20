@@ -135,6 +135,15 @@ async fn create_job(
     if !["pdf", "csv", "xlsx"].contains(&b.format.as_str()) {
         return Err(AppError::Validation("format must be pdf|csv|xlsx".into()));
     }
+    // Audit #12 Issue #1: validate cron expressions at create time so
+    // invalid crons fail the POST with 400 rather than silently sitting
+    // in the DB while the scheduler refuses to re-fire them.
+    if let Some(expr) = b.cron.as_deref() {
+        if !expr.trim().is_empty() {
+            super::cron::CronSchedule::parse(expr)
+                .map_err(|e| AppError::Validation(format!("invalid cron: {e}")))?;
+        }
+    }
     let row: JobRow = sqlx::query_as(
         "INSERT INTO report_jobs (owner_id, kind, format, params, cron) \
          VALUES ($1, $2, $3, $4, $5) \

@@ -240,6 +240,22 @@ async fn revoke_device_cert(
     Ok(HttpResponse::NoContent().finish())
 }
 
+/// Stable operator-facing note describing the live-vs-persisted contract
+/// for `/security/mtls` (Audit #12 Issue #3). Both handlers and the PATCH
+/// response body reuse this so the contract string is traceable and
+/// grep-able.
+fn mtls_contract_note(persisted: bool, active: bool) -> String {
+    if persisted == active {
+        "mTLS enforcement mode matches the live rustls server config.".to_string()
+    } else {
+        format!(
+            "mTLS enforcement persisted={persisted} but the live rustls server is running with \
+             enforced={active}; a backend restart is required for the persisted value to take \
+             effect."
+        )
+    }
+}
+
 async fn get_mtls(user: AuthUser, state: web::Data<AppState>) -> AppResult<impl Responder> {
     require_permission(&user.0, "mtls.manage")?;
     #[derive(FromRow)]
@@ -253,10 +269,15 @@ async fn get_mtls(user: AuthUser, state: web::Data<AppState>) -> AppResult<impl 
     )
     .fetch_one(&state.pool)
     .await?;
+    let active = state.mtls_startup_enforced;
+    let pending = row.enforced != active;
     Ok(HttpResponse::Ok().json(MtlsConfig {
         enforced: row.enforced,
         updated_at: row.updated_at,
         updated_by: row.updated_by,
+        active_enforced: active,
+        pending_restart: pending,
+        note: mtls_contract_note(row.enforced, active),
     }))
 }
 
@@ -283,7 +304,35 @@ async fn patch_mtls(
         json!({"enforced": req.enforced}),
     )
     .await?;
-    Ok(HttpResponse::NoContent().finish())
+
+    // Audit #12 Issue #3: do not lie about this PATCH being live. The
+    // rustls `ServerConfig` is built once at process startup from
+    // `mtls_config.enforced`, so a flag flip here only changes the live
+    // TLS mode on the next restart. Return the honest contract in both
+    // the response body and a warning log line so admin tooling and
+    // operators cannot accidentally assume instant effect.
+    let active = state.mtls_startup_enforced;
+    let pending = req.enforced != active;
+    let note = mtls_contract_note(req.enforced, active);
+    if pending {
+        tracing::warn!(
+            persisted = req.enforced,
+            active,
+            "mtls.update persisted; live TLS mode unchanged until next backend restart"
+        );
+    } else {
+        tracing::info!(
+            persisted = req.enforced,
+            active,
+            "mtls.update persisted; live TLS mode already matches"
+        );
+    }
+    Ok(HttpResponse::Ok().json(json!({
+        "enforced": req.enforced,
+        "active_enforced": active,
+        "pending_restart": pending,
+        "note": note,
+    })))
 }
 
 async fn mtls_status(user: AuthUser, state: web::Data<AppState>) -> AppResult<impl Responder> {
@@ -308,10 +357,18 @@ async fn mtls_status(user: AuthUser, state: web::Data<AppState>) -> AppResult<im
     )
     .fetch_one(&state.pool)
     .await?;
+    // Audit #12 Issue #3: expose both persisted-desired and
+    // startup-active TLS mode plus the pending-restart flag so the
+    // admin dashboard never silently implies a live flip.
+    let active_enforced = state.mtls_startup_enforced;
+    let pending_restart = cfg.enforced != active_enforced;
     Ok(HttpResponse::Ok().json(json!({
         "enforced": cfg.enforced,
         "updated_at": cfg.updated_at,
         "active_certs": active.0,
-        "revoked_certs": revoked.0
+        "revoked_certs": revoked.0,
+        "active_enforced": active_enforced,
+        "pending_restart": pending_restart,
+        "note": mtls_contract_note(cfg.enforced, active_enforced),
     })))
 }

@@ -686,6 +686,32 @@ Broad-gate `./run_tests.sh` rerun intentionally deferred per the standing "do no
 | 2 Fake perm codes | Blocker | UI referenced permission strings not seeded by `migrations/0002_rbac.sql`; `require_permission()` would always deny | Mapped every UI perm string to canonical vocabulary (`product.write`, `metric.read/configure`, `alert.ack/manage`, `report.schedule/run`) | 10 `PermGate` sites + nav conditions + gate2 tests aligned |
 | 3 Missing UI flows | High | Lineage, KPI drill, recruiter search, product governance, report schedule/download surfaces were either absent or placeholder | Built real components backed by real endpoints; added `/metrics/computations/:id/lineage` route; added binary-auth download helper | 5 new flow families live; all compile clean on wasm target |
 
+## Audit #12 Remediation (develop-1 lane)
+
+Four findings closed as a single coherent remediation bundle (shape A-B-C-D from the inbound directive):
+
+| # | Severity | Finding | Fix |
+| - | -------- | ------- | --- |
+| 1 | High   | Report jobs store a `cron` expression but the scheduler never evaluates it — "scheduled reports" were metadata-only. | New `crates/backend/src/reports/cron.rs` parser + `next_after` evaluator (POSIX-subset 5-field, Vixie-cron dom/dow OR rule, Sunday=0/7). Scheduler runs a cron re-schedule pass each tick: `done|cancelled|terminal-failed` jobs with non-empty cron and `NOW() >= next_fire(last_run_at ?? created_at)` are flipped back to `scheduled, retry_count=0`. `POST /reports/jobs` validates cron at create time (400 on invalid). |
+| 2 | High   | `reports::scheduler::build_report_data` called `.await.unwrap_or_default()` on each kind's query, turning DB failures into a successful-looking empty artifact. | Signature returns `AppResult<Vec<Value>>`; each `fetch_all` mapped via `map_err(AppError::Internal)` and propagated with `?`; the scheduler routes the error through the normal failure branch so the job lands in `failed` with `retry_count+1` — no empty PDF/CSV/XLSX produced. |
+| 3 | High   | `PATCH /security/mtls` only updated the DB; the live rustls `ServerConfig` was chosen once at startup. The surface implied instant effect. | `AppState.mtls_startup_enforced` captures the startup value. `GET /security/mtls`, `GET /security/mtls/status`, and `PATCH /security/mtls` all return `{enforced, active_enforced, pending_restart, note}`; PATCH now responds `200 OK` with that body (no longer `204`) and logs `warn!` on divergence. `tls.rs` + `app.rs` docs state the restart-gate explicitly. Tests updated. |
+| 4 | Medium | README still advertised `114/114` endpoint parity while `docs/api-spec.md §Totals` already said `117`. | README `114/114` / `All 114 REST endpoints` / Gate 3 line updated to `117/117` with the `51+21+31+14=117` breakdown; historical prior-audit sections retain `114` where it is historical. |
+
+Files changed:
+
+- **Backend — new:** `crates/backend/src/reports/cron.rs`.
+- **Backend — edited:** `crates/backend/src/reports/mod.rs` (`pub mod cron;`), `crates/backend/src/reports/scheduler.rs` (cron re-schedule pass + honest failures + `AppResult` return), `crates/backend/src/reports/handlers.rs` (cron validation at POST), `crates/backend/src/handlers/security.rs` (live-vs-persisted contract + `mtls_contract_note`), `crates/backend/src/state.rs` (`mtls_startup_enforced`), `crates/backend/src/app.rs` (capture startup flag + doc), `crates/backend/src/tls.rs` (restart-gate doc).
+- **Shared DTO:** `crates/shared/src/dto/security.rs` (`MtlsConfig` + `active_enforced, pending_restart, note`).
+- **Tests:** `crates/backend/tests/http_p1.rs` (SEC8/SEC9 assert the new contract), `crates/backend/tests/common/mod.rs` (`mtls_startup_enforced: false`).
+- **Docs:** `README.md` (114→117 + Audit #12 Remediation section), `plan.md` (this section).
+
+Verification shape:
+
+- Parser correctness: 10 inline unit tests in `cron.rs` (parse shapes, ranges, lists, steps, daily, weekday-only, unreachable `0 0 31 2 *`, Sunday `0`/`7` equivalence).
+- mTLS contract: `t_sec8_patch_mtls_requires_mtls_manage` now asserts `enforced=true, active_enforced=false, pending_restart=true`, note contains `restart`. `t_sec9_mtls_status_returns_cert_counts` asserts the three new fields are present.
+- Endpoint parity: Issue #4 is docs-only, so `bash scripts/audit_endpoints.sh` strict mode stays green at 117/117. No new routes were added, so the strict audit marker stays in place.
+- Broad-gate `./run_tests.sh` rerun deferred per the standing "do not rerun broad contract yet" directive.
+
 ## Audit #11 Remediation (develop-1 lane)
 
 Four findings closed as a single coherent remediation bundle:

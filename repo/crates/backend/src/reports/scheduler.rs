@@ -26,7 +26,7 @@ use sqlx::PgPool;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::errors::AppResult;
+use crate::errors::{AppError, AppResult};
 
 /// Spawn the scheduler loop. Returns a `JoinHandle`.
 pub fn start_report_scheduler(pool: PgPool, runtime_dir: PathBuf) -> JoinHandle<()> {
@@ -49,6 +49,57 @@ pub async fn run_due_jobs(pool: &PgPool, runtime_dir: &PathBuf) -> AppResult<()>
     )
     .execute(pool)
     .await?;
+
+    // Audit #12 Issue #1: cron re-schedule pass.
+    //
+    // Any job that carries a non-empty `cron` expression and has reached a
+    // terminal state for *this* run (`done`, `cancelled`, or terminally
+    // `failed` with retry_count >= 1) is a candidate for automatic
+    // re-firing. We compute the next cron fire time from the job's
+    // `last_run_at` (or `created_at` if it has never run) and, if NOW()
+    // has reached that moment, push the job back to `scheduled` with
+    // retry_count reset so it is picked up by the queue below. This
+    // turns the previously inert `cron` column into an actual schedule.
+    #[derive(sqlx::FromRow)]
+    struct CronRow {
+        id: Uuid,
+        cron: String,
+        last_run_at: Option<chrono::DateTime<Utc>>,
+        created_at: chrono::DateTime<Utc>,
+    }
+    let cron_candidates: Vec<CronRow> = sqlx::query_as(
+        "SELECT id, cron, last_run_at, created_at \
+         FROM report_jobs \
+         WHERE cron IS NOT NULL AND cron <> '' \
+           AND (status IN ('done','cancelled') \
+                OR (status='failed' AND retry_count >= 1))",
+    )
+    .fetch_all(pool)
+    .await?;
+    let now = Utc::now();
+    for c in cron_candidates {
+        let reference = c.last_run_at.unwrap_or(c.created_at);
+        match super::cron::next_fire_after(&c.cron, reference) {
+            Ok(Some(next)) if now >= next => {
+                sqlx::query(
+                    "UPDATE report_jobs \
+                     SET status='scheduled', retry_count=0 \
+                     WHERE id=$1 \
+                       AND (status IN ('done','cancelled') \
+                            OR (status='failed' AND retry_count >= 1))",
+                )
+                .bind(c.id)
+                .execute(pool)
+                .await?;
+                tracing::info!(job_id = %c.id, cron = %c.cron, "cron re-scheduled report job");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(job_id = %c.id, cron = %c.cron, error = %e,
+                    "invalid cron on existing report job; skipping re-schedule");
+            }
+        }
+    }
 
     // Pick up to 5 scheduled jobs per cycle
     #[derive(sqlx::FromRow)]
@@ -85,16 +136,22 @@ pub async fn run_due_jobs(pool: &PgPool, runtime_dir: &PathBuf) -> AppResult<()>
         let filename = format!("{}-{}.{}", job.id, ts, ext);
         let output_path = reports_dir.join(&filename);
 
-        let rows = build_report_data(pool, &job.kind, &job.params).await;
-
-        let render_result = match job.format.as_str() {
-            "pdf" => super::pdf::render(&job.kind, &rows, &output_path),
-            "csv" => super::csv::render(&rows, &output_path),
-            "xlsx" => super::xlsx::render(&job.kind, &rows, &output_path),
-            other => Err(crate::errors::AppError::Internal(format!(
-                "unknown format: {}",
-                other
-            ))),
+        // Audit #12 Issue #2: data-assembly errors were previously
+        // swallowed into `Vec::default()`, which produced a successful
+        // empty artifact and hid real DB failures. Build the data
+        // honestly and, if it fails, route the whole job to the normal
+        // failure path instead of rendering an empty artifact.
+        let render_result = match build_report_data(pool, &job.kind, &job.params).await {
+            Ok(rows) => match job.format.as_str() {
+                "pdf" => super::pdf::render(&job.kind, &rows, &output_path),
+                "csv" => super::csv::render(&rows, &output_path),
+                "xlsx" => super::xlsx::render(&job.kind, &rows, &output_path),
+                other => Err(crate::errors::AppError::Internal(format!(
+                    "unknown format: {}",
+                    other
+                ))),
+            },
+            Err(e) => Err(e),
         };
 
         match render_result {
@@ -151,7 +208,7 @@ pub(crate) async fn build_report_data(
     pool: &PgPool,
     kind: &str,
     params: &serde_json::Value,
-) -> Vec<serde_json::Value> {
+) -> AppResult<Vec<serde_json::Value>> {
     let p = params.as_object();
     let parse_ts = |k: &str| -> Option<chrono::DateTime<Utc>> {
         p.and_then(|o| o.get(k))
@@ -201,8 +258,8 @@ pub(crate) async fn build_report_data(
             .bind(limit)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
-            rows.into_iter()
+            .map_err(|e| AppError::Internal(format!("kpi_summary query failed: {e}")))?;
+            Ok(rows.into_iter()
                 .map(|r| {
                     serde_json::json!({
                         "formula_kind": r.formula_kind,
@@ -210,7 +267,7 @@ pub(crate) async fn build_report_data(
                         "computed_at": r.computed_at.to_rfc3339(),
                     })
                 })
-                .collect()
+                .collect())
         }
         "env_series" => {
             #[derive(sqlx::FromRow)]
@@ -242,8 +299,8 @@ pub(crate) async fn build_report_data(
             .bind(limit)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
-            rows.into_iter()
+            .map_err(|e| AppError::Internal(format!("env_series query failed: {e}")))?;
+            Ok(rows.into_iter()
                 .map(|r| {
                     serde_json::json!({
                         "source": r.source_name,
@@ -252,7 +309,7 @@ pub(crate) async fn build_report_data(
                         "observed_at": r.observed_at.to_rfc3339(),
                     })
                 })
-                .collect()
+                .collect())
         }
         "alert_digest" => {
             #[derive(sqlx::FromRow)]
@@ -288,8 +345,8 @@ pub(crate) async fn build_report_data(
             .bind(limit)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
-            rows.into_iter()
+            .map_err(|e| AppError::Internal(format!("alert_digest query failed: {e}")))?;
+            Ok(rows.into_iter()
                 .map(|r| {
                     serde_json::json!({
                         "severity": r.severity,
@@ -298,9 +355,9 @@ pub(crate) async fn build_report_data(
                         "resolved_at": r.resolved_at.map(|t| t.to_rfc3339()),
                     })
                 })
-                .collect()
+                .collect())
         }
-        _ => vec![],
+        other => Err(AppError::Internal(format!("unknown report kind: {other}"))),
     }
 }
 

@@ -864,17 +864,30 @@ async fn t_sec8_patch_mtls_requires_mtls_manage() {
         .insert_header(("Authorization", format!("Bearer {}", tok)))
         .set_json(json!({"enforced": true}))
         .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::NO_CONTENT
-    );
-    // Verify persisted.
+    // Audit #12 Issue #3: PATCH /security/mtls now returns 200 OK with
+    // the honest live-vs-persisted contract body (pending_restart flag +
+    // human-readable note) instead of 204 No Content. The DB value is
+    // persisted but the *active* rustls mode is still the startup one.
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let patch_body: Value = test::read_body_json(res).await;
+    assert_eq!(patch_body["enforced"], true);
+    assert_eq!(patch_body["active_enforced"], false);
+    assert_eq!(patch_body["pending_restart"], true);
+    assert!(patch_body["note"]
+        .as_str()
+        .unwrap()
+        .contains("restart"));
+    // Verify persisted + surfaced on GET with the same contract.
     let req = test::TestRequest::get()
         .uri("/api/v1/security/mtls")
         .insert_header(("Authorization", format!("Bearer {}", tok)))
         .to_request();
     let body: Value = test::read_body_json(test::call_service(&app, req).await).await;
     assert_eq!(body["enforced"], true);
+    assert_eq!(body["active_enforced"], false);
+    assert_eq!(body["pending_restart"], true);
+    assert!(body["note"].is_string());
 }
 
 #[actix_web::test]
@@ -897,6 +910,12 @@ async fn t_sec9_mtls_status_returns_cert_counts() {
     let body: Value = test::read_body_json(res).await;
     assert!(body["active_certs"].is_number());
     assert!(body["revoked_certs"].is_number());
+    // Audit #12 Issue #3: status must also surface the live-vs-persisted
+    // contract so the admin dashboard can never silently imply instant
+    // effect for a PATCH to mtls_config.enforced.
+    assert!(body["active_enforced"].is_boolean());
+    assert!(body["pending_restart"].is_boolean());
+    assert!(body["note"].is_string());
 }
 
 // ============================================================================

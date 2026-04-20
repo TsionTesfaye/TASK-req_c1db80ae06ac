@@ -20,4 +20,11 @@ pub struct AppState {
     /// `Config::runtime_dir`; defaults to `/runtime` in Docker and to the
     /// test runtime dir when under `Config::for_testing`.
     pub runtime_dir: PathBuf,
+    /// Value of `mtls_config.enforced` captured at process startup. The
+    /// rustls `ServerConfig` is built once from this flag, so it is the
+    /// *live* TLS mode for this process; later DB PATCHes to
+    /// `mtls_config` only take effect on the next restart. Exposed via
+    /// `GET /security/mtls` and `/security/mtls/status` so the admin
+    /// contract is honest about the restart gate (Audit #12 Issue #3).
+    pub mtls_startup_enforced: bool,
 }

@@ -1124,11 +1124,18 @@ pub mod admin {
                             </div>
                         </div>
                         <hr class="tx-sep" />
+                        <div class="tx-kv"><span>{ "Persisted enforced" }</span><span>{ m.enforced.to_string() }</span></div>
+                        <div class="tx-kv"><span>{ "Active (startup) enforced" }</span><span>{ m.active_enforced.to_string() }</span></div>
+                        if m.pending_restart {
+                            <div class="tx-callout tx-callout--warn">
+                                { "Restart required: " } { &m.note }
+                            </div>
+                        }
                         <div class="tx-kv"><span>{ "Active client certs" }</span><span>{ active }</span></div>
                         <div class="tx-kv"><span>{ "Revoked client certs" }</span><span>{ revoked }</span></div>
                         <p class="tx-subtle">
                             { "Issue new certs with " } <code>{ "scripts/issue_device_cert.sh" }</code>
-                            { " and register their SPKI pin via the backend API. The Rustls pinned-client verifier reload ships in P4 hardening." }
+                            { " and register their SPKI pin via the backend API. Device-cert SPKI pins refresh live every 30 s; the top-level enforcement mode is restart-gated (Audit #12)." }
                         </p>
                     </section>
                 }

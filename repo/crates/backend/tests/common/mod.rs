@@ -91,6 +91,11 @@ impl TestCtx {
             static_dir: PathBuf::from("/tmp/terraops-test-dist"),
             default_timezone: "America/New_York".into(),
             runtime_dir,
+            // Tests assume the persisted-desired flag and the startup-
+            // active flag start in sync (both off); cases that PATCH
+            // the DB then assert `pending_restart` manually against the
+            // fresh DB row versus this captured startup value.
+            mtls_startup_enforced: false,
         };
         Self {
             pool,
