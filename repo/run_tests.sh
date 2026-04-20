@@ -37,11 +37,13 @@
 #   Flow gate — Playwright specs under `e2e/specs/` (7 flows) run
 #     against the live `app` service on the compose network
 #     (`https://app:8443`) using the pinned Chromium and pre-staged
-#     `/opt/e2e/node_modules` baked into `Dockerfile.tests`. Set
-#     `TERRAOPS_SKIP_FLOW=1` to bypass explicitly (loud, not silent).
+#     `/opt/e2e/node_modules` baked into `Dockerfile.tests`. The flow
+#     gate uses `compose up -d --wait app` (Docker Compose v2.1+) and
+#     the app service's TCP healthcheck — no host-side `curl` required.
+#     Set `TERRAOPS_SKIP_FLOW=1` to bypass explicitly (loud, not silent).
 #
-# Host requirements: bash + docker (Compose v2). No host-side Rust,
-# Node, Chromium, or Playwright.
+# Host requirements: bash + docker (Compose v2.1+). No host-side Rust,
+# Node, Chromium, curl, or Playwright.
 
 set -euo pipefail
 
@@ -200,35 +202,25 @@ section "Flow gate — Playwright specs"
 if [[ "${TERRAOPS_SKIP_FLOW:-0}" == "1" ]]; then
     echo "[flow] SKIPPED — TERRAOPS_SKIP_FLOW=1 set; Playwright gate not executed."
 else
-    # Bring the `app` service up (TLS on 8443) so specs have a real target.
-    compose up -d app
-    # Wait for /api/v1/health to answer 200 before running specs.
-    ready=0
-    for i in $(seq 1 60); do
-        if curl -ks https://localhost:8443/api/v1/health 2>/dev/null | grep -q '"status":"ok"'; then
-            ready=1
-            break
-        fi
-        sleep 1
-    done
+    # Bring the `app` service up (TLS on 8443) and wait for its Docker
+    # healthcheck (TCP probe on :8443) to pass before running specs.
+    #
+    # `compose up -d --wait` requires Docker Compose v2.1+ and eliminates
+    # the need for host-side `curl`. Port 8443 only opens after the app's
+    # entrypoint has completed dev_bootstrap, migrations, and seed — so a
+    # passing TCP probe means the service is fully initialised.
     flow_ok=1
-    if [[ "${ready}" != "1" ]]; then
-        echo "[flow] FAILED — app service did not become healthy on :8443 within 60s." >&2
+    if ! compose up -d --wait app; then
+        echo "[flow] FAILED — app service did not become healthy within its healthcheck budget." >&2
         failed=1
         flow_ok=0
     else
-        # Re-seed demo users before Playwright runs. Gate 1's backend test
-        # suite shares one Postgres database with `app` (see docker-compose.yml)
-        # and TRUNCATEs the users table (crates/backend/tests/common/mod.rs)
-        # for test isolation, which wipes the demo users that Dockerfile.app's
-        # boot CMD seeded originally. Playwright's auth flows log in as
-        # `admin@terraops.local` / `TerraOps!2026` etc., so the demo accounts
-        # must exist at flow-gate time. `terraops-backend seed` is idempotent:
-        # it re-creates any missing demo user, leaves existing passwords alone,
-        # and rebuilds the role grants to the README matrix. Running it here
-        # is the single authoritative point that guarantees the demo accounts
-        # are present when Playwright runs, regardless of what Gate 1 did to
-        # the shared DB.
+        # Belt-and-suspenders reseed: Gate 1's backend test suite TRUNCATEs
+        # the users table for isolation. The app CMD already runs `seed` on
+        # startup (so the first boot above already reseeded), but an explicit
+        # call here guarantees accounts are present even if `app` was already
+        # running from a previous partial run. `terraops-backend seed` is
+        # idempotent — it creates missing users and leaves existing passwords.
         if ! compose exec -T app terraops-backend seed; then
             echo "[flow] FAILED — could not reseed demo users before Playwright." >&2
             failed=1
@@ -242,11 +234,11 @@ else
             tests bash -c '
                 set -e
                 cd /workspace/e2e
-                # Use the pre-installed node_modules from the image so no
-                # network access is required at test time.
-                if [[ ! -d node_modules ]]; then
-                    ln -s /opt/e2e/node_modules node_modules || cp -r /opt/e2e/node_modules .
-                fi
+                # Always use the node_modules baked into the image so the
+                # flow gate never depends on host-installed (possibly macOS-
+                # compiled) node_modules being mounted from the workspace.
+                ln -sfn /opt/e2e/node_modules node_modules 2>/dev/null \
+                    || { rm -rf node_modules && cp -r /opt/e2e/node_modules .; }
                 npx playwright test --reporter=list'; then
         echo "[flow] FAILED — Playwright specs reported failures." >&2
         failed=1

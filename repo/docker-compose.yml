@@ -48,6 +48,15 @@ services:
       - "8443:8443"
     volumes:
       - terraops-runtime:/runtime
+    healthcheck:
+      # TCP probe — port 8443 only opens after dev_bootstrap, migrations,
+      # and seed have all completed successfully. No host-side curl required.
+      # `compose up --wait` in run_tests.sh uses this to gate the flow gate.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8443 && exec 3>&-' 2>/dev/null"]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+      start_period: 20s
     restart: unless-stopped
 
   tests:
