@@ -31,7 +31,7 @@ use actix_web::{
     body::{BoxBody, EitherBody},
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     http::Method,
-    Error,
+    Error, ResponseError,
 };
 use futures_util::future::LocalBoxFuture;
 
@@ -88,16 +88,26 @@ where
         let method = req.method().clone();
         Box::pin(async move {
             if is_mutation(&method) {
+                // Let unauthenticated mutations surface as 401 from the
+                // extractor first — CSRF protects authenticated sessions.
+                // If no bearer credential is present, skip this check.
+                let has_auth = req
+                    .headers()
+                    .get(actix_web::http::header::AUTHORIZATION)
+                    .is_some();
                 let ok = req
                     .headers()
                     .get(CSRF_HEADER)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s == CSRF_EXPECTED_VALUE)
                     .unwrap_or(false);
-                if !ok {
-                    return Err(actix_web::Error::from(AppError::Forbidden(
+                if has_auth && !ok {
+                    let err = AppError::Forbidden(
                         "csrf: missing or invalid X-Requested-With header on mutation",
-                    )));
+                    );
+                    let response = err.error_response();
+                    let (http_req, _pl) = req.into_parts();
+                    return Ok(ServiceResponse::new(http_req, response).map_into_right_body());
                 }
             }
             let res = svc.call(req).await?;

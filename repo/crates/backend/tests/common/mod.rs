@@ -275,7 +275,7 @@ mod csrf_injector {
 
         forward_ready!(inner);
 
-        fn call(&self, req: ServiceRequest) -> Self::Future {
+        fn call(&self, mut req: ServiceRequest) -> Self::Future {
             let svc = self.inner.clone();
             Box::pin(async move {
                 // Only inject if the test request didn't already set it —
