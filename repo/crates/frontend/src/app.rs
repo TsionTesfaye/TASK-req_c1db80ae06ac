@@ -23,19 +23,19 @@ use crate::state::{
     NotificationsSnapshot, Toast, ToastContext, ToastLevel,
 };
 
-const NOTIFICATIONS_POLL_MS: u32 = 30_000;
-const TOAST_AUTO_DISMISS_MS: u32 = 5_000;
+pub(crate) const NOTIFICATIONS_POLL_MS: u32 = 30_000;
+pub(crate) const TOAST_AUTO_DISMISS_MS: u32 = 5_000;
 /// Audit #4 Issue #2: refresh the 15-minute access token via the
 /// local-session refresh cookie `REFRESH_LEAD_MS` milliseconds before
 /// the JWT's declared `exp`. With a 15-minute access TTL and a 60-
 /// second lead we refresh every ~14 minutes for an active tab.
-const REFRESH_LEAD_MS: f64 = 60_000.0;
+pub(crate) const REFRESH_LEAD_MS: f64 = 60_000.0;
 /// Hard floor so a clock-skewed or stale persisted state still retries
 /// promptly instead of busy-looping.
-const REFRESH_MIN_DELAY_MS: u32 = 5_000;
+pub(crate) const REFRESH_MIN_DELAY_MS: u32 = 5_000;
 /// If the persisted `access_expires_at_ms` is in the past we retry the
 /// refresh on this cadence until it succeeds or the user signs out.
-const REFRESH_RETRY_ON_ERROR_MS: u32 = 30_000;
+pub(crate) const REFRESH_RETRY_ON_ERROR_MS: u32 = 30_000;
 
 #[function_component(App)]
 pub fn app() -> Html {

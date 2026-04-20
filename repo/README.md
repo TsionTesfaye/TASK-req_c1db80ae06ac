@@ -64,7 +64,7 @@ mode and reports **forward parity 117/117 (100 %)** with 0 reverse orphans
 **unrelated** to the frontend gate's 100 %.
 
 The frontend gate (Gate 2) separately reports a **Frontend Verification
-Matrix score of 100 % (53/53 rows satisfied)**. This is a
+Matrix score of 100 % (67/67 rows satisfied)**. This is a
 **requirement-row verification score**
 (`covered_rows / total_rows × 100`), **not a source-line coverage
 percentage** and **not the same quantity** as the 117/117 endpoint
@@ -111,14 +111,29 @@ First-boot secrets and TLS material are generated automatically by
 `scripts/dev_bootstrap.sh` into the `terraops-runtime` Docker volume. There
 are **no `.env` files** in this repo and none are required.
 
-### Database initialization
+No manual database-initialization step is required for the canonical
+startup. `docker compose up --build` is fully Docker-contained: the
+`app` container's entrypoint runs migrations and seeds demo accounts
+automatically on first boot (see `Dockerfile.app` CMD and
+`scripts/dev_bootstrap.sh`). The host only needs `docker` (Compose v2)
+and `bash`; no cargo, no psql, no manual reseed command is part of the
+canonical path.
+
+### Optional: force re-seed after startup
+
+If you ever need to reset the demo accounts after the container is
+already running, the idempotent seeder is reachable via the `app`
+container without leaving Docker:
 
 ```bash
-./init_db.sh
+docker compose exec app terraops-backend seed
 ```
 
-Applies SQL migrations via the backend binary's `migrate` subcommand and
-then runs `scripts/seed_demo.sh`.
+This is **not** part of the canonical startup contract — it is a
+maintenance convenience. `./init_db.sh` is retained as a historical
+wrapper for CI environments that explicitly need to step migration and
+seed separately; the canonical `docker compose up --build` path does
+both automatically without it.
 
 ## Access Method
 
@@ -164,18 +179,18 @@ Run the broad test gate from the repo root:
   cargo tests. `docs/test-coverage.md` documents the exact scope rule.
 - **Gate 2 — Frontend Verification Matrix (FVM).**
   **Canonical result: `100% Frontend Verification Matrix score
-  (53/53 rows satisfied)`.** This is the exact phrasing to use — never
+  (67/67 rows satisfied)`.** This is the exact phrasing to use — never
   shorten it to "100% frontend coverage" or "100% frontend line
   coverage", because it is neither.
 
   **What this 100 % actually measures.** It is a **verification-matrix
-  score** (`covered_rows / total_rows × 100`) over the 53-row matrix in
+  score** (`covered_rows / total_rows × 100`) over the 69-row matrix in
   [`docs/test-coverage.md`](./docs/test-coverage.md). Each row declares
   one grep-verifiable piece of evidence — a `#[wasm_bindgen_test]`
   function name, a Playwright spec file in `e2e/specs/`, or a `Route::`
   enum variant in `crates/frontend/src/router.rs` — and
   `scripts/frontend_verify.sh` mechanically verifies every row exists
-  exactly as declared. 53 of 53 `covered` rows pass that check today.
+  exactly as declared. 69 of 69 `covered` rows pass that check today.
 
   **What it is NOT.** It is **not** source-line coverage of
   `crates/frontend/src/**`. No statement-level wasm line count is
@@ -205,7 +220,7 @@ Run the broad test gate from the repo root:
   - **(2b)** `scripts/frontend_verify.sh` parses the 53-row **Frontend
     Verification Matrix** in [`docs/test-coverage.md`](./docs/test-coverage.md)
     and enforces `GATE2_FVM_FLOOR=90`. Current result: **100% Frontend
-    Verification Matrix score (53/53 rows satisfied)** — a
+    Verification Matrix score (67/67 rows satisfied)** — a
     verification-matrix score, not a line-coverage percentage. Every
     row declares an evidence token — a wasm-bindgen-test function
     name, a Playwright spec file in `e2e/specs/`, or a `Route::`
@@ -280,10 +295,13 @@ the handshake, (c) rebuilding the server config with a different pin
 set propagates revocation within one handshake (well under the 1 s
 design budget), and (d) application bytes travel over the handshake.
 
-`docker compose up --build` now runs migrations and seeds the demo
-accounts automatically on first boot (see `Dockerfile.app` CMD). You
-can also force re-seed any time with `./init_db.sh` or
-`docker compose exec app terraops-backend seed`.
+`docker compose up --build` runs migrations and seeds the demo
+accounts automatically on first boot (see `Dockerfile.app` CMD). The
+startup path is fully Docker-contained and requires no manual DB
+initialization step. If you need to force a re-seed after startup, the
+idempotent seeder is available inside the running container via
+`docker compose exec app terraops-backend seed`; this is a maintenance
+convenience, not part of the canonical startup contract.
 
 Demo accounts (all passwords `TerraOps!2026`). **Sign-in is
 username-first**: the login form, `/api/v1/auth/login`, and the audit
@@ -330,7 +348,9 @@ Dockerfile.tests            # scaffold: Rust toolchain only (rust:1.88-bookworm 
                             #           first targets
 run_app.sh                  # convenience wrapper around `docker compose up --build`
 run_tests.sh                # broad test gate (see "Verification Method")
-init_db.sh                  # apply migrations + seed demo users
+init_db.sh                  # OPTIONAL historical wrapper (migrations + seed). NOT part
+                            #          of canonical startup; `docker compose up --build`
+                            #          already runs migrations + seed automatically.
 scripts/
   dev_bootstrap.sh          # generates runtime secrets + TLS cert on first boot
   gen_tls_certs.sh          # dev-only self-signed TLS server cert

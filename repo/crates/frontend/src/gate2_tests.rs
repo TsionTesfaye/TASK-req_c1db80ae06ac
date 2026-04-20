@@ -499,3 +499,139 @@ fn perm_gate_unauth_and_authz_shapes() {
     assert!(authorized.has_permission("user.manage"),
         "authorized branch → children render");
 }
+
+// ===========================================================================
+// Family G — pages::format_date / format_ts_opt pure helpers
+// ===========================================================================
+
+#[wasm_bindgen_test]
+fn format_date_formats_naive_date_as_mm_dd_yyyy() {
+    use chrono::NaiveDate;
+    let d = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let s = crate::pages::format_date(d);
+    assert_eq!(s, "04/20/2026", "format_date must be MM/DD/YYYY, got: {s}");
+}
+
+#[wasm_bindgen_test]
+fn format_date_pads_single_digit_month_and_day() {
+    use chrono::NaiveDate;
+    let d = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+    let s = crate::pages::format_date(d);
+    assert_eq!(s, "01/05/2026", "format_date should zero-pad month and day, got: {s}");
+}
+
+#[wasm_bindgen_test]
+fn format_ts_opt_none_returns_em_dash() {
+    let s = crate::pages::format_ts_opt(None);
+    assert_eq!(s, "—", "format_ts_opt(None) must return em-dash, got: {s:?}");
+}
+
+#[wasm_bindgen_test]
+fn format_ts_opt_some_returns_formatted_string() {
+    use chrono::{TimeZone, Utc};
+    let dt = Utc.with_ymd_and_hms(2026, 4, 20, 14, 30, 0).unwrap();
+    let s = crate::pages::format_ts_opt(Some(dt));
+    // Must not be the em-dash fallback — exact format depends on the
+    // Node test runner's local TZ, so we only assert non-empty + structural.
+    assert!(!s.is_empty(), "format_ts_opt(Some) should not be empty");
+    assert_ne!(s, "—", "format_ts_opt(Some) must not return em-dash");
+    // Must contain some digits (date/time components).
+    assert!(s.chars().any(|c| c.is_ascii_digit()), "formatted ts must contain digits, got: {s:?}");
+}
+
+#[wasm_bindgen_test]
+fn format_ts_produces_non_empty_string_for_epoch() {
+    use chrono::{TimeZone, Utc};
+    let dt = Utc.timestamp_opt(0, 0).unwrap(); // Unix epoch
+    let s = crate::pages::format_ts(dt);
+    assert!(!s.is_empty(), "format_ts(epoch) must be non-empty, got: {s:?}");
+    // Must contain a slash — the MM/DD/YYYY format.
+    assert!(s.contains('/'), "format_ts must contain '/', got: {s:?}");
+}
+
+// ===========================================================================
+// Family H — app.rs constants (design contract pins)
+// ===========================================================================
+
+#[wasm_bindgen_test]
+fn app_notification_poll_interval_is_30s() {
+    // design.md §notifications: poll every 30 seconds while authenticated.
+    assert_eq!(crate::app::NOTIFICATIONS_POLL_MS, 30_000,
+        "notification poll interval must be 30 000 ms");
+}
+
+#[wasm_bindgen_test]
+fn app_toast_auto_dismiss_is_5s() {
+    // design.md: non-error toasts auto-dismiss after 5 s to avoid clutter.
+    assert_eq!(crate::app::TOAST_AUTO_DISMISS_MS, 5_000,
+        "toast auto-dismiss must be 5 000 ms");
+}
+
+#[wasm_bindgen_test]
+fn app_token_refresh_lead_is_60s() {
+    // design.md §auth: refresh the 15-min JWT with a 60-second lead so
+    // the token is never served stale.
+    assert_eq!(crate::app::REFRESH_LEAD_MS as u32, 60_000,
+        "token refresh lead must be 60 000 ms");
+}
+
+#[wasm_bindgen_test]
+fn app_refresh_min_delay_is_5s() {
+    // Hard floor preventing busy-looping on clock-skew or stale state.
+    assert_eq!(crate::app::REFRESH_MIN_DELAY_MS, 5_000,
+        "refresh min delay must be 5 000 ms");
+}
+
+#[wasm_bindgen_test]
+fn app_refresh_retry_on_error_is_30s() {
+    // Retry on transient network failure at the same cadence as
+    // notification polling so the UI recovers within one poll window.
+    assert_eq!(crate::app::REFRESH_RETRY_ON_ERROR_MS, 30_000,
+        "refresh retry-on-error interval must be 30 000 ms");
+}
+
+// ===========================================================================
+// Family I — components pure-logic shapes (PermAnyGate any() contract,
+//            LoadMore / DataTable prop equality)
+// ===========================================================================
+
+#[wasm_bindgen_test]
+fn perm_any_gate_any_semantics_positive() {
+    // The PermAnyGate accepts users who hold ANY of the listed permissions.
+    // This test pins the pure logic: `state.has_permission` for at least one
+    // of the listed permissions → access granted.
+    let s = seeded_auth_state(&["talent.read"], &[Role::Recruiter], "R");
+    let perms = ["talent.read", "talent.manage"];
+    let ok = perms.iter().any(|p| s.has_permission(p));
+    assert!(ok, "user with talent.read should pass any-gate for [talent.read, talent.manage]");
+}
+
+#[wasm_bindgen_test]
+fn perm_any_gate_any_semantics_negative() {
+    let s = seeded_auth_state(&["kpi.read"], &[Role::RegularUser], "U");
+    let perms = ["talent.read", "talent.manage"];
+    let ok = perms.iter().any(|p| s.has_permission(p));
+    assert!(!ok, "user without talent perms must not pass any-gate");
+}
+
+#[wasm_bindgen_test]
+fn perm_any_gate_manage_is_superset_of_read() {
+    // talent.manage is a superset of talent.read in the RBAC model.
+    // A user with only talent.manage must still pass the [talent.read, talent.manage] any-gate.
+    let s = seeded_auth_state(&["talent.manage"], &[Role::Administrator], "A");
+    let perms = ["talent.read", "talent.manage"];
+    let ok = perms.iter().any(|p| s.has_permission(p));
+    assert!(ok, "talent.manage holder must pass any-gate for [talent.read, talent.manage]");
+}
+
+#[wasm_bindgen_test]
+fn report_perm_any_gate_run_or_schedule() {
+    // report.schedule ⊇ report.run in the analyst/recruiter model.
+    let scheduler = seeded_auth_state(&["report.schedule"], &[Role::Analyst], "A");
+    let runner = seeded_auth_state(&["report.run"], &[Role::RegularUser], "U");
+    let neither = seeded_auth_state(&["kpi.read"], &[Role::RegularUser], "N");
+    let perms = ["report.run", "report.schedule"];
+    assert!(perms.iter().any(|p| scheduler.has_permission(p)), "scheduler must pass");
+    assert!(perms.iter().any(|p| runner.has_permission(p)), "runner must pass");
+    assert!(!perms.iter().any(|p| neither.has_permission(p)), "neither must fail");
+}

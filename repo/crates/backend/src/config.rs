@@ -71,3 +71,150 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Env reads in `from_env` race across tests; serialize them.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env<F: FnOnce() -> R, R>(pairs: &[(&str, Option<&str>)], f: F) -> R {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Snapshot+set
+        let saved: Vec<(String, Option<String>)> = pairs
+            .iter()
+            .map(|(k, _)| (k.to_string(), std::env::var(k).ok()))
+            .collect();
+        for (k, v) in pairs {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        let out = f();
+        // Restore
+        for (k, v) in saved {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn from_env_errors_when_database_url_missing() {
+        with_env(&[("DATABASE_URL", None)], || {
+            let err = Config::from_env().unwrap_err().to_string();
+            assert!(
+                err.contains("DATABASE_URL"),
+                "error should name missing var, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn from_env_applies_defaults_when_optional_vars_absent() {
+        with_env(
+            &[
+                ("DATABASE_URL", Some("postgres://u:p@h/db")),
+                ("TERRAOPS_BIND_ADDR", None),
+                ("TERRAOPS_STATIC_DIR", None),
+                ("TERRAOPS_TLS_CERT", None),
+                ("TERRAOPS_TLS_KEY", None),
+                ("TERRAOPS_RUNTIME_DIR", None),
+                ("TERRAOPS_DEFAULT_TZ", None),
+                ("TERRAOPS_ENFORCE_TLS", None),
+            ],
+            || {
+                let c = Config::from_env().expect("defaults should yield valid config");
+                assert_eq!(c.bind_addr, "0.0.0.0:8443");
+                assert_eq!(c.database_url, "postgres://u:p@h/db");
+                assert_eq!(c.static_dir, PathBuf::from("/app/dist"));
+                assert_eq!(c.tls_cert_path, PathBuf::from("/runtime/certs/server.crt"));
+                assert_eq!(c.tls_key_path, PathBuf::from("/runtime/certs/server.key"));
+                assert_eq!(c.runtime_dir, PathBuf::from("/runtime"));
+                assert_eq!(c.default_timezone, "America/New_York");
+                assert!(c.enforce_tls, "enforce_tls defaults to true");
+            },
+        );
+    }
+
+    #[test]
+    fn from_env_enforce_tls_parses_truthy_and_falsy() {
+        for (raw, expected) in [
+            ("1", true),
+            ("true", true),
+            ("TRUE", true),
+            ("yes", true),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+            ("nonsense", false),
+            ("", false),
+        ] {
+            with_env(
+                &[
+                    ("DATABASE_URL", Some("postgres://u:p@h/db")),
+                    ("TERRAOPS_ENFORCE_TLS", Some(raw)),
+                ],
+                || {
+                    let c = Config::from_env().unwrap();
+                    assert_eq!(
+                        c.enforce_tls, expected,
+                        "TERRAOPS_ENFORCE_TLS={raw:?} → expected {expected}"
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn from_env_honors_all_overrides() {
+        with_env(
+            &[
+                ("DATABASE_URL", Some("postgres://x")),
+                ("TERRAOPS_BIND_ADDR", Some("127.0.0.1:4443")),
+                ("TERRAOPS_STATIC_DIR", Some("/srv/www")),
+                ("TERRAOPS_TLS_CERT", Some("/k/s.crt")),
+                ("TERRAOPS_TLS_KEY", Some("/k/s.key")),
+                ("TERRAOPS_RUNTIME_DIR", Some("/var/run/t")),
+                ("TERRAOPS_DEFAULT_TZ", Some("UTC")),
+                ("TERRAOPS_ENFORCE_TLS", Some("false")),
+            ],
+            || {
+                let c = Config::from_env().unwrap();
+                assert_eq!(c.bind_addr, "127.0.0.1:4443");
+                assert_eq!(c.static_dir, PathBuf::from("/srv/www"));
+                assert_eq!(c.tls_cert_path, PathBuf::from("/k/s.crt"));
+                assert_eq!(c.tls_key_path, PathBuf::from("/k/s.key"));
+                assert_eq!(c.runtime_dir, PathBuf::from("/var/run/t"));
+                assert_eq!(c.default_timezone, "UTC");
+                assert!(!c.enforce_tls);
+            },
+        );
+    }
+
+    #[test]
+    fn for_testing_sets_expected_shape() {
+        let c = Config::for_testing("postgres://test".into(), PathBuf::from("/tmp/rt"));
+        assert_eq!(c.database_url, "postgres://test");
+        assert_eq!(c.runtime_dir, PathBuf::from("/tmp/rt"));
+        assert_eq!(c.bind_addr, "127.0.0.1:0");
+        assert!(!c.enforce_tls, "test harness never enforces TLS");
+        assert_eq!(c.default_timezone, "America/New_York");
+    }
+
+    #[test]
+    fn config_is_clone_and_debug() {
+        // Catches accidental removal of the derived traits that the rest
+        // of the app relies on (AppState clones Config into middleware
+        // init, tracing logs Debug).
+        let c = Config::for_testing("postgres://t".into(), PathBuf::from("/rt"));
+        let _clone = c.clone();
+        let dbg = format!("{c:?}");
+        assert!(dbg.contains("Config"));
+    }
+}

@@ -79,9 +79,13 @@ failed=0
 # modules that are exercised end-to-end by `docker compose up --build`
 # rather than by cargo tests.
 GATE1_LINE_FLOOR="${GATE1_LINE_FLOOR:-94}"
-GATE1_IGNORE_REGEX='/(tests|migrations|\.sqlx)/|backend/src/(main|app|tls|spa|config|db|seed)\.rs|backend/src/(storage|models)/|backend/src/telemetry\.rs'
+# spa.rs, config.rs, db.rs are now covered by inline #[cfg(test)] modules
+# and are no longer excluded from coverage. main.rs, app.rs (backend),
+# tls.rs, and seed.rs remain excluded as they are pure-IO boot paths.
+GATE1_IGNORE_REGEX='/(tests|migrations|\.sqlx)/|backend/src/(main|app|tls|seed)\.rs|backend/src/(storage|models)/|backend/src/telemetry\.rs'
 
-GATE1_TESTS=(http_p1 parity_tests talent_search_tests talent_recommend_tests \
+GATE1_TESTS=(http_p1 parity_tests parity_success_tests \
+             talent_search_tests talent_recommend_tests \
              talent_weights_tests talent_watchlist_tests talent_feedback_tests \
              integration_tests mtls_handshake_tests budget_tests \
              deep_products_tests deep_metrics_kpi_tests deep_alerts_reports_tests \

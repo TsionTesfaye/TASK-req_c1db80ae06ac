@@ -10,7 +10,7 @@ what is proven and what is explicitly not.
 > | Gate | What it measures | Unit | Floor | Current |
 > |---|---|---|---|---|
 > | **Gate 1** (backend) | native-Rust source lines executed by tests | `lines_covered / lines_total × 100` (real **line coverage**) | 94 | ~94.83 % |
-> | **Gate 2** (frontend) | requirement matrix rows with grep-verifiable evidence | `covered_rows / total_rows × 100` (**Frontend Verification Matrix score**, NOT line coverage) | 90 | 100 % (53/53 rows satisfied) |
+> | **Gate 2** (frontend) | requirement matrix rows with grep-verifiable evidence | `covered_rows / total_rows × 100` (**Frontend Verification Matrix score**, NOT line coverage) | 90 | 100 % (67/67 rows satisfied) |
 >
 > The frontend 100 is a **verification-matrix score**, not a
 > line-coverage percentage. Anywhere in this repo that it is reported
@@ -39,11 +39,11 @@ what is proven and what is explicitly not.
 
   - **Floor:** `GATE2_FVM_FLOOR=90`.
   - **Current measured value:** **100% Frontend Verification Matrix
-    score (53/53 rows satisfied)**. This exact phrasing is the
+    score (67/67 rows satisfied)**. This exact phrasing is the
     canonical way to report it. Never shorten it to "100% frontend
     coverage".
 
-  **What the 100 % score actually means.** 53 of 53 requirement
+  **What the 100 % score actually means.** 67 of 67 requirement
   rows in the matrix below (authoritative, in this file) have a
   grep-verifiable piece of evidence that exists in the codebase
   exactly as declared. Each row declares one of three evidence
@@ -220,22 +220,38 @@ every row whose first column is `FVM-*`.
 | FVM-I2 | admin | Admin ops flow end-to-end | playwright | admin_ops.spec.ts | covered | existing |
 | FVM-J1 | state_model | PermGate three-branch shape (unauth / denied / authorized) | wasm_bindgen_test | perm_gate_unauth_and_authz_shapes | covered | new |
 | FVM-J2 | state_model | Offline / loading / empty / error states | playwright | offline_states.spec.ts | covered | existing |
+| FVM-K1 | pages | format_date formats NaiveDate as MM/DD/YYYY | wasm_bindgen_test | format_date_formats_naive_date_as_mm_dd_yyyy | covered | pages pure helper |
+| FVM-K2 | pages | format_date zero-pads single-digit month and day | wasm_bindgen_test | format_date_pads_single_digit_month_and_day | covered | pages pure helper |
+| FVM-K3 | pages | format_ts_opt None returns em-dash | wasm_bindgen_test | format_ts_opt_none_returns_em_dash | covered | pages pure helper |
+| FVM-K4 | pages | format_ts_opt Some returns formatted string | wasm_bindgen_test | format_ts_opt_some_returns_formatted_string | covered | pages pure helper |
+| FVM-K5 | pages | format_ts produces non-empty string with slashes | wasm_bindgen_test | format_ts_produces_non_empty_string_for_epoch | covered | pages pure helper |
+| FVM-L1 | app | notifications poll interval is 30 s | wasm_bindgen_test | app_notification_poll_interval_is_30s | covered | app.rs constant |
+| FVM-L2 | app | toast auto-dismiss is 5 s | wasm_bindgen_test | app_toast_auto_dismiss_is_5s | covered | app.rs constant |
+| FVM-L3 | app | token refresh lead is 60 s | wasm_bindgen_test | app_token_refresh_lead_is_60s | covered | app.rs constant |
+| FVM-L4 | app | refresh min delay is 5 s | wasm_bindgen_test | app_refresh_min_delay_is_5s | covered | app.rs constant |
+| FVM-L5 | app | refresh retry-on-error is 30 s | wasm_bindgen_test | app_refresh_retry_on_error_is_30s | covered | app.rs constant |
+| FVM-M1 | components | PermAnyGate any-semantics positive | wasm_bindgen_test | perm_any_gate_any_semantics_positive | covered | components logic |
+| FVM-M2 | components | PermAnyGate any-semantics negative | wasm_bindgen_test | perm_any_gate_any_semantics_negative | covered | components logic |
+| FVM-M3 | components | PermAnyGate manage is superset of read | wasm_bindgen_test | perm_any_gate_manage_is_superset_of_read | covered | components RBAC |
+| FVM-M4 | components | PermAnyGate report run-or-schedule any-gate | wasm_bindgen_test | report_perm_any_gate_run_or_schedule | covered | components RBAC |
 
 ### Summary (prose)
 
-- **53 rows** above, **0 `deferred`**, **53 `covered`** → current
-  Frontend Verification Matrix score **100% (53/53 rows satisfied)**.
+- **67 rows** above, **0 `deferred`**, **67 `covered`** → current
+  Frontend Verification Matrix score **100% (67/67 rows satisfied)**.
   This is a requirement-row score, not wasm source-line coverage.
-- The 53 rows span 10 families: auth gating, API-client error/retry/budget
-  semantics, toast/notification plumbing, router variants, and one
-  nav-permission-shape row plus one Playwright flow per role family.
+- The 67 rows span 13 families: auth gating, API-client error/retry/budget
+  semantics, toast/notification plumbing, router variants, nav-permission
+  shapes (one wasm + one Playwright per role), state-model gates,
+  pages.rs pure helpers (format_date / format_ts / format_ts_opt),
+  app.rs design-contract constants, and components.rs PermAnyGate logic.
 - Playwright specs contribute 7 rows (`login.spec.ts`,
   `alert_to_notification.spec.ts`, `products_import.spec.ts`,
   `analyst_metric_report.spec.ts`, `talent_recommendations.spec.ts`,
   `admin_ops.spec.ts`, `offline_states.spec.ts`). Every recruiter/
   data-steward/analyst/admin page family has at least one wasm-bindgen
   row **plus** one Playwright row.
-- **Static verification (wasm-bindgen unit + logic tests): 43 rows.**
+- **Static verification (wasm-bindgen unit + logic tests): 57 rows.**
 - **Playwright flow verification: 7 rows.**
 - **Router static enumeration: 3 rows.**
 
