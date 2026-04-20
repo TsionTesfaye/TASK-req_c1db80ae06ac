@@ -22,15 +22,29 @@ use crate::{
     services::users as user_svc,
 };
 
-/// Attempt login with plain email + password. Returns the authenticated
-/// user row when credentials match and the account is usable.
+/// Attempt login with a locally-validated username + password (audit
+/// #4 issue 4). Returns the authenticated user row when credentials
+/// match and the account is usable.
+///
+/// For backwards compatibility during rollout, if the caller passes a
+/// value that looks like an email (contains `@`) and no user matches by
+/// username, we fall back to an email-hash lookup so pre-rollout tests
+/// and any clients still posting an email continue to work.
 pub async fn authenticate(
     pool: &PgPool,
     email_hmac_key: &[u8; 32],
-    email_plain: &str,
+    username_or_email: &str,
     password: &str,
 ) -> AppResult<UserRow> {
-    let Some(user) = user_svc::find_by_email(pool, email_plain, email_hmac_key).await? else {
+    let candidate = user_svc::find_by_username(pool, username_or_email).await?;
+    let candidate = match candidate {
+        Some(u) => Some(u),
+        None if username_or_email.contains('@') => {
+            user_svc::find_by_email(pool, username_or_email, email_hmac_key).await?
+        }
+        None => None,
+    };
+    let Some(user) = candidate else {
         // Even on "no such user" we run a dummy argon2 verify to keep the
         // timing profile uniform. This is cheap and standard.
         let _ = argon::verify_password(password, "$argon2id$v=19$m=19456,t=2,p=1$\

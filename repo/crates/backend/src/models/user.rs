@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct UserRow {
     pub id: Uuid,
     pub display_name: String,
+    pub username: String,
     pub email_ciphertext: Vec<u8>,
     pub email_hash: Vec<u8>,
     pub email_mask: String,

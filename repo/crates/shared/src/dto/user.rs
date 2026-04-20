@@ -37,6 +37,12 @@ pub struct UserDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateUserRequest {
     pub display_name: String,
+    /// Audit #4 Issue #4: login is locally-validated username + password.
+    /// The admin-create form sets both `username` (for login) and `email`
+    /// (for operator contact/masking). If the client omits `username`,
+    /// the backend derives it from the email local-part.
+    #[serde(default)]
+    pub username: Option<String>,
     pub email: String,
     pub password: String,
     pub roles: Vec<Role>,

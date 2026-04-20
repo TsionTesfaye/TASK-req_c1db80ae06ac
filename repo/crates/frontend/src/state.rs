@@ -25,6 +25,14 @@ const STORAGE_KEY: &str = "terraops.auth";
 pub struct AuthState {
     pub token: String,
     pub user: AuthUserDto,
+    /// Audit #4 Issue #2: absolute expiry of the access token in
+    /// milliseconds since the UNIX epoch. The app-level refresh loop
+    /// schedules a `/auth/refresh` a short while before this instant so
+    /// the 15-minute JWT lifetime never expires under an active user.
+    /// Older persisted states without this field default to 0.0, which
+    /// triggers an immediate refresh on boot.
+    #[serde(default)]
+    pub access_expires_at_ms: f64,
 }
 
 impl AuthState {

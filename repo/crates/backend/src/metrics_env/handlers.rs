@@ -226,11 +226,18 @@ async fn create_definition(
             "formula_kind must be one of: moving_average, rate_of_change, comfort_index"
         )));
     }
+    // Audit #4 Issue #3: validate analyst-configurable alignment rules
+    // + confidence labels embedded in `params`. Missing block defaults
+    // are accepted; malformed block is rejected with a 422 so the
+    // analyst gets an actionable error instead of silently-bad config.
+    let params = b.params.unwrap_or(serde_json::json!({}));
+    terraops_shared::dto::metric::FusionConfig::from_params_value(&params)
+        .map_err(AppError::Validation)?;
     let dto = definitions::create(
         &state.pool,
         &b.name,
         &b.formula_kind,
-        b.params.unwrap_or(serde_json::json!({})),
+        params,
         &b.source_ids,
         b.window_seconds.unwrap_or(3600),
         user.0.user_id,
@@ -270,6 +277,13 @@ async fn update_definition(
                     .into(),
             ));
         }
+    }
+    // Audit #4 Issue #3: validate analyst-configurable alignment/
+    // confidence params on update as well (otherwise a malformed patch
+    // could sneak past the create-time validator by editing later).
+    if let Some(ref p) = b.params {
+        terraops_shared::dto::metric::FusionConfig::from_params_value(p)
+            .map_err(AppError::Validation)?;
     }
     let dto = definitions::update(
         &state.pool,
@@ -413,7 +427,26 @@ async fn get_series(
                             def.window_seconds as i64,
                             now,
                         )
-                        .map(|out| {
+                        .and_then(|out| {
+                            // Audit #4 Issue #3: honor the analyst-
+                            // configurable alignment rules parsed from
+                            // `params.alignment`. In strict mode (the
+                            // default) fresh points with alignment
+                            // below `min_alignment` are dropped — we
+                            // neither return them to the UI nor persist
+                            // them. In lenient mode they still flow
+                            // through but carry the low-alignment
+                            // signal in their confidence label.
+                            let fusion =
+                                terraops_shared::dto::metric::FusionConfig::from_params_value(
+                                    &def.params,
+                                )
+                                .unwrap_or_default();
+                            if fusion.alignment.strict
+                                && out.alignment < fusion.alignment.min_alignment
+                            {
+                                return None;
+                            }
                             let mut all_samples: Vec<_> =
                                 temp.iter().chain(hum.iter()).cloned().collect();
                             if let Some(a) = air.as_ref() {
@@ -429,11 +462,11 @@ async fn get_series(
                                 Some(out.alignment),
                                 Some(out.confidence),
                             );
-                            terraops_shared::dto::metric::SeriesPoint {
+                            Some(terraops_shared::dto::metric::SeriesPoint {
                                 at: now,
                                 value: out.value,
                                 computation_id: Some(cid),
-                            }
+                            })
                         })
                     } else {
                         None

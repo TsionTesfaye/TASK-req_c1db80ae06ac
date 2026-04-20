@@ -40,14 +40,25 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
     let ca_path = cfg.runtime_dir.join("internal_ca").join("ca.crt");
     let tls_cfg = if mtls_enforced {
+        // Build a live SPKI pin set seeded from `device_certs WHERE
+        // revoked_at IS NULL` and install a background refresher. The
+        // rustls `ClientCertVerifier` holds an `Arc<RwLock<_>>` into this
+        // pin set, so admin revocations propagate on the next refresh
+        // tick (30s) without a server restart — any handshake after that
+        // is refused at the transport layer.
+        let pins = tls::new_pin_set();
+        let n0 = tls::refresh_pins(&pool, &pins).await?;
         tracing::info!(
             ca_path = %ca_path.display(),
-            "mTLS enforcement is ON — binding rustls with pinned client-cert verifier"
+            active_pins = n0,
+            "mTLS enforcement is ON — binding rustls with CA-chain verifier + live device-cert SPKI pin set"
         );
-        tls::load_server_config_with_mtls(
+        tls::spawn_pin_refresher(pool.clone(), pins.clone(), std::time::Duration::from_secs(30));
+        tls::load_server_config_with_pinned_mtls(
             &cfg.tls_cert_path,
             &cfg.tls_key_path,
-            Some(&ca_path),
+            &ca_path,
+            pins,
         )?
     } else {
         tracing::info!("mTLS enforcement is OFF — binding rustls in one-way TLS mode");

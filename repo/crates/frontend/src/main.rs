@@ -8,6 +8,9 @@ mod pages;
 mod router;
 mod state;
 
+#[cfg(test)]
+mod gate2_tests;
+
 fn main() {
     yew::Renderer::<app::App>::new().render();
 }

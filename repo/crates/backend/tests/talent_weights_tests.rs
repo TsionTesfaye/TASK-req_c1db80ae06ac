@@ -150,8 +150,13 @@ async fn t_t8_put_weights_scoped_self_only() {
     let res = test::call_service(&app, req).await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    // u1 should still have defaults (unaffected)
-    let (_, t1_new) = common::issue_session_for(&ctx.pool, &ctx.keys, u1).await;
+    // u1 should still have defaults (unaffected).
+    // Note: `issue_session_for` returns `(token, session_id)` — the token is
+    // the first tuple element. Earlier versions of this test destructured in
+    // reverse order, so the "bearer" was actually a session UUID, the request
+    // was rejected at auth, and the response body was an error envelope whose
+    // `skills_weight` key was missing (Null).
+    let (t1_new, _sid) = common::issue_session_for(&ctx.pool, &ctx.keys, u1).await;
     let req = test::TestRequest::get()
         .uri("/api/v1/talent/weights")
         .insert_header(("Authorization", format!("Bearer {t1_new}")))

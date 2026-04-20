@@ -16,7 +16,7 @@ use crate::{
 
 pub async fn find_by_id(pool: &PgPool, user_id: Uuid) -> AppResult<Option<UserRow>> {
     let row: Option<UserRow> = sqlx::query_as::<_, UserRow>(
-        "SELECT id, display_name, email_ciphertext, email_hash, email_mask, password_hash, \
+        "SELECT id, display_name, username, email_ciphertext, email_hash, email_mask, password_hash, \
                 password_updated_at, is_active, failed_login_count, locked_until, timezone, \
                 created_at, updated_at \
          FROM users WHERE id = $1",
@@ -35,12 +35,35 @@ pub async fn find_by_email(
     let normalized = normalize_email(email_plain);
     let hash = email_hash(&normalized, hmac_key).to_vec();
     let row: Option<UserRow> = sqlx::query_as::<_, UserRow>(
-        "SELECT id, display_name, email_ciphertext, email_hash, email_mask, password_hash, \
+        "SELECT id, display_name, username, email_ciphertext, email_hash, email_mask, password_hash, \
                 password_updated_at, is_active, failed_login_count, locked_until, timezone, \
                 created_at, updated_at \
          FROM users WHERE email_hash = $1",
     )
     .bind(&hash)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Find a user by case-insensitive username. This is the primary
+/// lookup used by the login handler (audit #4 issue 4: sign-in contract
+/// is locally-validated username + password, not email).
+pub async fn find_by_username(
+    pool: &PgPool,
+    username: &str,
+) -> AppResult<Option<UserRow>> {
+    let uname = username.trim().to_lowercase();
+    if uname.is_empty() {
+        return Ok(None);
+    }
+    let row: Option<UserRow> = sqlx::query_as::<_, UserRow>(
+        "SELECT id, display_name, username, email_ciphertext, email_hash, email_mask, password_hash, \
+                password_updated_at, is_active, failed_login_count, locked_until, timezone, \
+                created_at, updated_at \
+         FROM users WHERE LOWER(username) = $1",
+    )
+    .bind(&uname)
     .fetch_optional(pool)
     .await?;
     Ok(row)

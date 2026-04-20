@@ -189,12 +189,22 @@ pub async fn create_user_with_roles(
     let hash = email_hash(&normalized, &keys.email_hmac).to_vec();
     let mask = email_mask(&normalized);
     let phc = argon::hash_password(password).expect("hash");
+    // Audit #4 Issue #4: users have a first-class `username` column used
+    // by the login contract; for tests we derive it from the email
+    // local-part + a random suffix to avoid uniqueness collisions when
+    // two tests seed the same email into the same DB.
+    let uname = format!(
+        "{}-{}",
+        normalized.split('@').next().unwrap_or("user"),
+        &Uuid::new_v4().to_string()[..8]
+    );
     let row: (Uuid,) = sqlx::query_as(
-        "INSERT INTO users (display_name, email_ciphertext, email_hash, email_mask, \
+        "INSERT INTO users (display_name, username, email_ciphertext, email_hash, email_mask, \
                             password_hash, timezone) \
-         VALUES ($1, $2, $3, $4, $5, 'America/New_York') RETURNING id",
+         VALUES ($1, $2, $3, $4, $5, $6, 'America/New_York') RETURNING id",
     )
     .bind(format!("Test {}", email))
+    .bind(&uname)
     .bind(&ct)
     .bind(&hash)
     .bind(&mask)

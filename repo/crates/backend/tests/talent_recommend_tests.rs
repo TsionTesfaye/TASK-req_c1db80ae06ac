@@ -187,11 +187,12 @@ async fn t_t6_recommendations_blended_after_10_feedback() {
     // Insert 10 feedback records to flip to blended scoring
     for i in 0..10 {
         let (fuid,): (uuid::Uuid,) = sqlx::query_as(
-            "INSERT INTO users (display_name, email_ciphertext, email_hash, email_mask, password_hash) \
-             VALUES ($1, '\\x00'::bytea, $2, 'u***@x.com', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb') \
+            "INSERT INTO users (display_name, username, email_ciphertext, email_hash, email_mask, password_hash) \
+             VALUES ($1, $2, '\\x00'::bytea, $3, 'u***@x.com', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb') \
              RETURNING id",
         )
         .bind(format!("FbUser {i}"))
+        .bind(format!("fbuser-{i}-{}", uuid::Uuid::new_v4()))
         .bind(format!("hash{i}").as_bytes().to_vec())
         .fetch_one(&ctx.pool)
         .await

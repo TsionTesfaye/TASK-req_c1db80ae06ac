@@ -50,21 +50,125 @@ const SELECT_COLS: &str =
 
 /// List open roles (all statuses for internal use, or optionally filter by status).
 pub async fn list(pool: &PgPool, limit: i64, offset: i64) -> Result<(Vec<RoleOpenRow>, i64), AppError> {
-    let rows: Vec<RoleOpenRow> = sqlx::query_as::<_, RoleOpenRow>(
-        &format!(
-            "SELECT {SELECT_COLS} FROM roles_open \
-             ORDER BY created_at DESC LIMIT $1 OFFSET $2"
-        ),
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+    list_filtered(pool, &RoleFilter::default(), limit, offset).await
+}
 
-    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*)::BIGINT FROM roles_open")
-        .fetch_one(pool)
-        .await?;
+/// Filter parameters for T4 `GET /talent/roles` search/filter (audit #4
+/// issue #5). All fields are optional; they compose with AND.
+#[derive(Debug, Default, Clone)]
+pub struct RoleFilter {
+    /// Case-insensitive substring match over `title`.
+    pub q: Option<String>,
+    /// Exact match against `status` (`open` | `closed` | `filled`).
+    pub status: Option<String>,
+    pub department_id: Option<Uuid>,
+    pub site_id: Option<Uuid>,
+    /// Minimum `min_years` required by the role.
+    pub min_years: Option<i32>,
+    /// Any of the listed skills must appear in `required_skills`.
+    pub skills_any: Vec<String>,
+}
 
+/// Same as `list` but honors search/filter parameters.
+pub async fn list_filtered(
+    pool: &PgPool,
+    f: &RoleFilter,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<RoleOpenRow>, i64), AppError> {
+    // Build the WHERE fragment + bind pile together so the total query
+    // and the page query share the exact same predicate set.
+    let mut where_parts: Vec<String> = Vec::new();
+    // We bind through positional $N placeholders; keep a counter.
+    let mut n = 0usize;
+    let mut bind_q: Option<String> = None;
+    let mut bind_status: Option<String> = None;
+    let mut bind_dept: Option<Uuid> = None;
+    let mut bind_site: Option<Uuid> = None;
+    let mut bind_min_years: Option<i32> = None;
+    let mut bind_skills: Option<Vec<String>> = None;
+
+    if let Some(q) = f.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        n += 1;
+        where_parts.push(format!("title ILIKE ${n}"));
+        bind_q = Some(format!("%{}%", q.replace('%', "\\%")));
+    }
+    if let Some(s) = f
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        n += 1;
+        where_parts.push(format!("status = ${n}"));
+        bind_status = Some(s.to_string());
+    }
+    if let Some(d) = f.department_id {
+        n += 1;
+        where_parts.push(format!("department_id = ${n}"));
+        bind_dept = Some(d);
+    }
+    if let Some(s) = f.site_id {
+        n += 1;
+        where_parts.push(format!("site_id = ${n}"));
+        bind_site = Some(s);
+    }
+    if let Some(y) = f.min_years {
+        n += 1;
+        where_parts.push(format!("min_years >= ${n}"));
+        bind_min_years = Some(y);
+    }
+    if !f.skills_any.is_empty() {
+        n += 1;
+        where_parts.push(format!("required_skills && ${n}"));
+        bind_skills = Some(f.skills_any.clone());
+    }
+
+    let where_sql = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_parts.join(" AND "))
+    };
+
+    let page_sql = format!(
+        "SELECT {SELECT_COLS} FROM roles_open{where_sql} \
+         ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+        n + 1,
+        n + 2
+    );
+    let total_sql = format!("SELECT COUNT(*)::BIGINT FROM roles_open{where_sql}");
+
+    // Build both queries with the same predicate binds; the page query
+    // appends limit + offset.
+    let mut page_q = sqlx::query_as::<_, RoleOpenRow>(&page_sql);
+    let mut total_q = sqlx::query_as::<_, (i64,)>(&total_sql);
+    if let Some(v) = bind_q.as_ref() {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_status.as_ref() {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_dept {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_site {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_min_years {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+    if let Some(v) = bind_skills.as_ref() {
+        page_q = page_q.bind(v);
+        total_q = total_q.bind(v);
+    }
+
+    let rows = page_q.bind(limit).bind(offset).fetch_all(pool).await?;
+    let (total,) = total_q.fetch_one(pool).await?;
     Ok((rows, total))
 }
 

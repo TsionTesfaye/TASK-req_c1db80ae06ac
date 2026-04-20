@@ -13,9 +13,14 @@
 #   * Gate 3 — `scripts/audit_endpoints.sh` (pure bash + awk).
 #
 # Explicitly deferred (honestly, not silently):
-#   * grcov + the 80% line-coverage threshold ride in alongside the
-#     first full frontend coverage run; current Gate 2 proves the tests
-#     actually execute end-to-end, which is the P1 contract.
+#   * Wasm source-based line coverage was evaluated and rejected as the
+#     authoritative frontend proof on this toolchain (stable rust 1.88
+#     `wasm32-unknown-unknown` sysroot ships no `profiler_builtins`; see
+#     `docs/test-coverage.md §Why the frontend is not measured by wasm
+#     source-based line coverage`). Gate 2 is therefore the Frontend
+#     Verification Matrix (FVM) — a requirement-row verification score,
+#     not a line-coverage percentage. grcov is retained in this image
+#     only as historical tooling; it is not used by the current gate.
 #   * Playwright flow gate. Pinned Chromium and Playwright browsers are
 #     activated when the first real spec lands in a later phase; see
 #     `run_tests.sh` for the clearly-labelled DEFERRED line.
@@ -51,15 +56,17 @@ RUN apt-get update \
 RUN rustup target add wasm32-unknown-unknown \
  && cargo install --locked wasm-bindgen-cli --version 0.2.118
 
-# Coverage tooling for the threshold-enforcing Gate 1 + Gate 2 wrappers
-# documented in `docs/test-coverage.md §Coverage Gate Math`:
+# Coverage tooling for Gate 1 (the only line-coverage gate in this
+# repo):
 #   * `cargo-llvm-cov` drives the native-Rust line-coverage gate
-#     (`--fail-under-lines 90` applied to terraops-shared + terraops-backend).
-#   * `grcov` drives the frontend WASM line-coverage gate
-#     (`--threshold 80` applied to terraops-frontend).
+#     (`--fail-under-lines ${GATE1_LINE_FLOOR}` applied to
+#     terraops-shared + terraops-backend).
+#   * `grcov` is retained as historical tooling only; wasm source-line
+#     coverage is not the authoritative frontend proof — Gate 2 is the
+#     Frontend Verification Matrix instead. See `docs/test-coverage.md`.
 # `llvm-tools-preview` ships the profdata/profcov binaries both tools
-# rely on. Installed here so `run_tests.sh` can layer thresholds on
-# without needing on-demand `cargo install` at gate time.
+# rely on. Installed here so `run_tests.sh` can layer the Gate 1
+# threshold on without needing on-demand `cargo install` at gate time.
 RUN rustup component add llvm-tools-preview \
  && cargo install --locked cargo-llvm-cov --version 0.6.11 \
  && cargo install --locked grcov --version 0.8.24

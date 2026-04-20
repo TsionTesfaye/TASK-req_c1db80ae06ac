@@ -48,6 +48,7 @@ fn seeded_auth_state(
             permissions: perms.iter().map(|s| (*s).into()).collect(),
             timezone: Some("UTC".into()),
         },
+        access_expires_at_ms: 0.0,
     }
 }
 

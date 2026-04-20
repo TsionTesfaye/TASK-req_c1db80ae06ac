@@ -138,14 +138,60 @@ async fn get_candidate(
 
 // ── T4: GET /talent/roles ────────────────────────────────────────────────────
 
+/// Query parameters for T4 list/search/filter (audit #4 issue #5).
+#[derive(Debug, Deserialize, Default)]
+struct RoleListQuery {
+    pub q: Option<String>,
+    pub status: Option<String>,
+    pub department_id: Option<Uuid>,
+    pub site_id: Option<Uuid>,
+    pub min_years: Option<i32>,
+    /// Comma-separated list of skill tokens; match is "any-of".
+    pub skills: Option<String>,
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+}
+
 async fn list_roles(
     user: AuthUser,
     state: web::Data<AppState>,
-    q: web::Query<PageQuery>,
+    q: web::Query<RoleListQuery>,
 ) -> AppResult<impl Responder> {
     require_permission(&user.0, "talent.read")?;
-    let r = q.into_inner().resolved();
-    let (rows, total) = roles_open::list(&state.pool, r.limit() as i64, r.offset() as i64).await?;
+    let q = q.into_inner();
+    let r = PageQuery {
+        page: q.page,
+        page_size: q.page_size,
+    }
+    .resolved();
+    let skills: Vec<String> = q
+        .skills
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(ref s) = q.status {
+        if !matches!(s.as_str(), "open" | "closed" | "filled") {
+            return Err(crate::errors::AppError::Validation(
+                "status must be 'open', 'closed', or 'filled'".into(),
+            ));
+        }
+    }
+    let filter = crate::talent::roles_open::RoleFilter {
+        q: q.q,
+        status: q.status,
+        department_id: q.department_id,
+        site_id: q.site_id,
+        min_years: q.min_years,
+        skills_any: skills,
+    };
+    let (rows, total) =
+        roles_open::list_filtered(&state.pool, &filter, r.limit() as i64, r.offset() as i64)
+            .await?;
     let items: Vec<_> = rows
         .into_iter()
         .map(terraops_shared::dto::talent::RoleOpenItem::from)

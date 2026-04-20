@@ -59,6 +59,10 @@ pub mod auth {
         let toast = use_context::<ToastContext>().expect("ToastContext");
         let navigator = use_navigator().unwrap();
 
+        // Audit #4 Issue #4: sign-in contract is locally-validated
+        // username + password. We keep the state variable named `email`
+        // to minimize churn, but the value carried is the typed
+        // username and the UI label/placeholder reflect that.
         let email = use_state(|| String::new());
         let password = use_state(|| String::new());
         let submitting = use_state(|| false);
@@ -122,6 +126,7 @@ pub mod auth {
                             let new_state = AuthState {
                                 token: resp.access_token,
                                 user: resp.user,
+                                access_expires_at_ms: resp.access_expires_at.timestamp_millis() as f64,
                             };
                             auth.set.emit(Some(new_state));
                             toast.success("Signed in.");
@@ -142,10 +147,11 @@ pub mod auth {
                     <h1 id="login-title" class="tx-title">{ "TerraOps" }</h1>
                     <p class="tx-subtle">{ "Offline Environmental & Catalog Intelligence Portal" }</p>
                     <form class="tx-form" onsubmit={onsubmit}>
-                        <label for="email" class="tx-subtle">{ "Email" }</label>
-                        <input id="email" class="tx-input" type="email" autocomplete="username"
+                        <label for="username" class="tx-subtle">{ "Username" }</label>
+                        <input id="username" name="username" class="tx-input" type="text"
+                               autocomplete="username" autocapitalize="none" spellcheck="false"
                                required=true value={(*email).clone()} oninput={on_email}
-                               placeholder="admin@terraops.local" />
+                               placeholder="admin" />
                         <label for="password" class="tx-subtle">{ "Password" }</label>
                         <input id="password" class="tx-input" type="password" autocomplete="current-password"
                                required=true value={(*password).clone()} oninput={on_password}
@@ -605,6 +611,7 @@ pub mod admin {
 
         let name = use_state(|| String::new());
         let email = use_state(|| String::new());
+        let username = use_state(|| String::new());
         let password = use_state(|| String::new());
         let selected_role = use_state(|| Role::RegularUser);
         let submitting = use_state(|| false);
@@ -633,6 +640,7 @@ pub mod admin {
         let onsubmit = {
             let name = name.clone();
             let email = email.clone();
+            let username = username.clone();
             let password = password.clone();
             let selected_role = selected_role.clone();
             let submitting = submitting.clone();
@@ -642,9 +650,11 @@ pub mod admin {
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
                 submitting.set(true);
+                let uname = (*username).trim().to_string();
                 let body = CreateUserRequest {
                     display_name: (*name).clone(),
                     email: (*email).clone(),
+                    username: if uname.is_empty() { None } else { Some(uname) },
                     password: (*password).clone(),
                     roles: vec![*selected_role],
                     timezone: None,
@@ -655,12 +665,14 @@ pub mod admin {
                 let submitting = submitting.clone();
                 let name = name.clone();
                 let email = email.clone();
+                let username = username.clone();
                 let password = password.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.create_user(&body).await {
                         Ok(_) => {
                             name.set(String::new());
                             email.set(String::new());
+                            username.set(String::new());
                             password.set(String::new());
                             on_created.emit(());
                         }
@@ -679,6 +691,8 @@ pub mod admin {
                 <form class="tx-form tx-form--row" onsubmit={onsubmit}>
                     <input class="tx-input" type="text" placeholder="Display name"
                            required=true value={(*name).clone()} oninput={on_str(name.clone())} />
+                    <input class="tx-input" type="text" placeholder="username (optional, derived from email if blank)"
+                           value={(*username).clone()} oninput={on_str(username.clone())} />
                     <input class="tx-input" type="email" placeholder="email@domain"
                            required=true value={(*email).clone()} oninput={on_str(email.clone())} />
                     <input class="tx-input" type="password" placeholder="Temp password"
@@ -3806,16 +3820,32 @@ pub mod recruiter {
         let title = use_state(String::new);
         let skills = use_state(String::new);
         let years = use_state(|| "0".to_string());
+        // Audit #4 Issue #5: recruiter-side role search/filter state.
+        let search_q = use_state(String::new);
+        let search_status = use_state(String::new);
+        let search_min_years = use_state(String::new);
+        let search_skills = use_state(String::new);
 
         let reload = {
             let auth = auth.clone();
             let list = list.clone();
+            let search_q = search_q.clone();
+            let search_status = search_status.clone();
+            let search_min_years = search_min_years.clone();
+            let search_skills = search_skills.clone();
             Callback::from(move |_: ()| {
                 let api = auth.api();
                 let list = list.clone();
                 list.set(LoadState::Loading);
+                let q = (*search_q).clone();
+                let status = (*search_status).clone();
+                let min_years = search_min_years.parse::<i32>().ok();
+                let skills_csv = (*search_skills).clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    match api.list_talent_roles().await {
+                    let q_opt = if q.trim().is_empty() { None } else { Some(q.as_str()) };
+                    let s_opt = if status.trim().is_empty() { None } else { Some(status.as_str()) };
+                    let sk_opt = if skills_csv.trim().is_empty() { None } else { Some(skills_csv.as_str()) };
+                    match api.search_talent_roles(q_opt, s_opt, min_years, sk_opt).await {
                         Ok(v) => list.set(LoadState::Loaded(v)),
                         Err(e) => list.set(LoadState::Failed(e.user_facing())),
                     }
@@ -3940,7 +3970,64 @@ pub mod recruiter {
             }
         };
 
-        html! { <>{ create_card }{ body }</> }
+        // Filter panel (audit #4 issue #5). Kept above the create-role
+        // card so recruiters see the search surface first.
+        let set_input = |st: UseStateHandle<String>| -> Callback<InputEvent> {
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                st.set(t.value());
+            })
+        };
+        let on_apply = {
+            let reload = reload.clone();
+            Callback::from(move |e: SubmitEvent| {
+                e.prevent_default();
+                reload.emit(());
+            })
+        };
+        let on_clear = {
+            let sq = search_q.clone();
+            let ss = search_status.clone();
+            let smy = search_min_years.clone();
+            let ssk = search_skills.clone();
+            let reload = reload.clone();
+            Callback::from(move |_: MouseEvent| {
+                sq.set(String::new());
+                ss.set(String::new());
+                smy.set(String::new());
+                ssk.set(String::new());
+                reload.emit(());
+            })
+        };
+        let filter_card = html! {
+            <section class="tx-card">
+                <h2 class="tx-title tx-title--sm">{ "Search roles" }</h2>
+                <form class="tx-form tx-form--row" onsubmit={on_apply}>
+                    <input class="tx-input" placeholder="Title contains…"
+                           value={(*search_q).clone()} oninput={set_input(search_q.clone())}/>
+                    <select class="tx-input" onchange={Callback::from({
+                        let ss = search_status.clone();
+                        move |e: Event| {
+                            let t: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                            ss.set(t.value());
+                        }
+                    })}>
+                        <option value="" selected={search_status.is_empty()}>{ "Any status" }</option>
+                        <option value="open" selected={*search_status == "open"}>{ "open" }</option>
+                        <option value="closed" selected={*search_status == "closed"}>{ "closed" }</option>
+                        <option value="filled" selected={*search_status == "filled"}>{ "filled" }</option>
+                    </select>
+                    <input class="tx-input" placeholder="Min years"
+                           value={(*search_min_years).clone()} oninput={set_input(search_min_years.clone())}/>
+                    <input class="tx-input" placeholder="Skills (any, comma sep.)"
+                           value={(*search_skills).clone()} oninput={set_input(search_skills.clone())}/>
+                    <button class="tx-btn" type="submit">{ "Apply" }</button>
+                    <button class="tx-btn tx-btn--ghost" type="button" onclick={on_clear}>{ "Clear" }</button>
+                </form>
+            </section>
+        };
+
+        html! { <>{ filter_card }{ create_card }{ body }</> }
     }
 
     #[function_component(Recommendations)]

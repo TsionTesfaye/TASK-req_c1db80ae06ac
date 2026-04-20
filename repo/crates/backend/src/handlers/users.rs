@@ -165,12 +165,39 @@ async fn create_user(
     let password_hash = argon::hash_password(&req.password)
         .map_err(|e| AppError::Internal(format!("argon: {e}")))?;
 
+    // Audit #4 Issue #4: username is the primary login identifier.
+    // Accept an explicit `username` in the request, or derive it from
+    // the email local-part. Lowercased for a case-insensitive contract.
+    let username_raw = req
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| {
+            normalized
+                .split('@')
+                .next()
+                .unwrap_or(&normalized)
+                .to_string()
+        });
+    if !username_raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        || username_raw.is_empty()
+    {
+        return Err(AppError::Validation(
+            "username must be non-empty and contain only letters, digits, '.', '_', or '-'".into(),
+        ));
+    }
+
     let row: (Uuid,) = sqlx::query_as(
-        "INSERT INTO users (display_name, email_ciphertext, email_hash, email_mask, \
+        "INSERT INTO users (display_name, username, email_ciphertext, email_hash, email_mask, \
                             password_hash, timezone) \
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
     )
     .bind(&req.display_name)
+    .bind(&username_raw)
     .bind(&email_ct)
     .bind(&email_hash)
     .bind(&email_mask)

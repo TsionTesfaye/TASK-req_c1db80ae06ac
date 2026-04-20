@@ -34,6 +34,7 @@ pub const DEMO_PASSWORD: &str = "TerraOps!2026";
 
 struct Demo {
     email: &'static str,
+    username: &'static str,
     display: &'static str,
     role: Role,
 }
@@ -42,26 +43,31 @@ pub async fn seed_demo(pool: &PgPool, keys: &RuntimeKeys) -> AppResult<()> {
     let demos = [
         Demo {
             email: "admin@terraops.local",
+            username: "admin",
             display: "Demo Administrator",
             role: Role::Administrator,
         },
         Demo {
             email: "steward@terraops.local",
+            username: "steward",
             display: "Demo Data Steward",
             role: Role::DataSteward,
         },
         Demo {
             email: "analyst@terraops.local",
+            username: "analyst",
             display: "Demo Analyst",
             role: Role::Analyst,
         },
         Demo {
             email: "recruiter@terraops.local",
+            username: "recruiter",
             display: "Demo Recruiter",
             role: Role::Recruiter,
         },
         Demo {
             email: "user@terraops.local",
+            username: "user",
             display: "Demo Regular User",
             role: Role::RegularUser,
         },
@@ -86,11 +92,12 @@ pub async fn seed_demo(pool: &PgPool, keys: &RuntimeKeys) -> AppResult<()> {
             let phc = argon::hash_password(DEMO_PASSWORD)
                 .map_err(|e| crate::errors::AppError::Internal(format!("argon: {e}")))?;
             let row: (uuid::Uuid,) = sqlx::query_as(
-                "INSERT INTO users (display_name, email_ciphertext, email_hash, \
+                "INSERT INTO users (display_name, username, email_ciphertext, email_hash, \
                                     email_mask, password_hash, timezone) \
-                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
             )
             .bind(d.display)
+            .bind(d.username)
             .bind(&ct)
             .bind(&hash)
             .bind(&mask)
@@ -100,6 +107,12 @@ pub async fn seed_demo(pool: &PgPool, keys: &RuntimeKeys) -> AppResult<()> {
             .await?;
             row.0
         };
+        // Ensure any pre-existing row has a matching canonical username.
+        sqlx::query("UPDATE users SET username = $1 WHERE id = $2 AND LOWER(username) <> LOWER($1)")
+            .bind(d.username)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
 
         // Rebuild role grant to exactly one role (the demo role).
         let mut tx = pool.begin().await?;

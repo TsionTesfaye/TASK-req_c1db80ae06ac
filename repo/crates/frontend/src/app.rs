@@ -25,6 +25,17 @@ use crate::state::{
 
 const NOTIFICATIONS_POLL_MS: u32 = 30_000;
 const TOAST_AUTO_DISMISS_MS: u32 = 5_000;
+/// Audit #4 Issue #2: refresh the 15-minute access token via the
+/// local-session refresh cookie `REFRESH_LEAD_MS` milliseconds before
+/// the JWT's declared `exp`. With a 15-minute access TTL and a 60-
+/// second lead we refresh every ~14 minutes for an active tab.
+const REFRESH_LEAD_MS: f64 = 60_000.0;
+/// Hard floor so a clock-skewed or stale persisted state still retries
+/// promptly instead of busy-looping.
+const REFRESH_MIN_DELAY_MS: u32 = 5_000;
+/// If the persisted `access_expires_at_ms` is in the past we retry the
+/// refresh on this cadence until it succeeds or the user signs out.
+const REFRESH_RETRY_ON_ERROR_MS: u32 = 30_000;
 
 #[function_component(App)]
 pub fn app() -> Html {
@@ -113,6 +124,89 @@ pub fn app() -> Html {
         snapshot: (*notif_snapshot).clone(),
         refresh: refresh_notifications.clone(),
     };
+
+    // Audit #4 Issue #2: 15-minute access-token refresh loop.
+    //
+    // The backend issues a 15-minute JWT (see `crypto::jwt::
+    // ACCESS_TOKEN_TTL_MINUTES`) plus a long-lived HttpOnly refresh
+    // cookie. The SPA never reads the refresh cookie directly — we just
+    // POST `/auth/refresh`, the browser attaches the cookie, and the
+    // backend returns a fresh access token. The effect re-runs whenever
+    // the token changes (login / refresh / logout) so the next refresh
+    // is always scheduled against the latest `access_expires_at`.
+    {
+        let token = auth_ctx.state.as_ref().map(|s| s.token.clone());
+        let expires_at = auth_ctx
+            .state
+            .as_ref()
+            .map(|s| s.access_expires_at_ms)
+            .unwrap_or(0.0);
+        let set_auth_for_refresh = auth_ctx.set.clone();
+        let current_user = auth_ctx.state.as_ref().map(|s| s.user.clone());
+        let current_token = token.clone();
+        use_effect_with(token, move |t| {
+            let cancel = Rc::new(std::cell::Cell::new(false));
+            if t.is_some() {
+                let cancel = cancel.clone();
+                let set_auth = set_auth_for_refresh.clone();
+                let user = current_user.clone();
+                let current_token = current_token.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let now = js_sys::Date::now();
+                    let delay_ms = if expires_at <= 0.0 {
+                        // Unknown / legacy persisted state — refresh now
+                        // (after a tiny delay so we do not race the
+                        // initial render).
+                        REFRESH_MIN_DELAY_MS
+                    } else {
+                        let d = (expires_at - now - REFRESH_LEAD_MS).max(REFRESH_MIN_DELAY_MS as f64);
+                        d as u32
+                    };
+                    TimeoutFuture::new(delay_ms).await;
+                    if cancel.get() {
+                        return;
+                    }
+                    let api = crate::api::ApiClient::with_token(current_token);
+                    match api.refresh().await {
+                        Ok(resp) => {
+                            if let Some(u) = user {
+                                set_auth.emit(Some(crate::state::AuthState {
+                                    token: resp.access_token,
+                                    user: u,
+                                    access_expires_at_ms: resp
+                                        .access_expires_at
+                                        .timestamp_millis()
+                                        as f64,
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            // Session unusable: sign out. Transient
+                            // network failure: retry on a shorter
+                            // cadence by clearing nothing and letting
+                            // the next effect run re-schedule — we do
+                            // that by emitting a short timer + manual
+                            // re-invocation here.
+                            if e.is_unauthenticated() {
+                                set_auth.emit(None);
+                            } else {
+                                TimeoutFuture::new(REFRESH_RETRY_ON_ERROR_MS).await;
+                                if cancel.get() {
+                                    return;
+                                }
+                                // Fire a best-effort retry; if that
+                                // also fails we give up until the next
+                                // login. We do not loop indefinitely
+                                // here to avoid spinning when offline.
+                                let _ = crate::api::ApiClient::default().refresh().await;
+                            }
+                        }
+                    }
+                });
+            }
+            move || cancel.set(true)
+        });
+    }
 
     // Poll unread-count while authenticated. Re-runs whenever the auth
     // token changes (login / logout / refresh).

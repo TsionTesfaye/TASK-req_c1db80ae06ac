@@ -120,12 +120,12 @@ impl ResponseError for AppError {
         let envelope = ErrorEnvelope {
             error_code: self.code(),
             message: self.to_string(),
-            // The request_id middleware replaces this placeholder with the
-            // actual per-request id via an extension-aware wrapper; the
-            // placeholder here ensures the envelope shape is always valid
-            // even on paths that did not mount the middleware (e.g. tests
-            // asserting shape before the middleware is wired).
-            request_id: "unknown".into(),
+            // The `RequestIdMw` middleware rewrites this sentinel with the
+            // actual per-request id on the way out. The sentinel — not
+            // `"unknown"` — makes the rewrite unambiguous and safe to
+            // perform on the raw JSON body. Envelopes emitted outside of
+            // the middleware (e.g. shape tests) still have a valid shape.
+            request_id: crate::middleware::request_id::REQUEST_ID_PLACEHOLDER.into(),
             details,
         };
         HttpResponse::build(self.status_code()).json(envelope)

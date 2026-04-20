@@ -59,6 +59,27 @@ pub const GET_RETRIES: u32 = 1;
 /// (`:8443`) so a relative prefix is correct in every deployment.
 pub const API_BASE: &str = "/api/v1";
 
+/// Minimal application/x-www-form-urlencoded escaper for query params.
+/// We encode anything outside the unreserved ASCII set. We avoid pulling
+/// in a heavier dep here since the SPA already compiles to wasm and the
+/// escaper is only used for a handful of user-supplied query fragments.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        let c = *b;
+        let unreserved = (b'A'..=b'Z').contains(&c)
+            || (b'a'..=b'z').contains(&c)
+            || (b'0'..=b'9').contains(&c)
+            || matches!(c, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{:02X}", c));
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Client + error
 // ---------------------------------------------------------------------------
@@ -88,7 +109,7 @@ impl ApiError {
             ApiError::Timeout => "The request took too long. Please try again.".into(),
             ApiError::Network(_) => "Network unavailable. Please try again.".into(),
             ApiError::Api { code, message, .. } => match code {
-                ErrorCode::AuthInvalidCredentials => "Incorrect email or password.".into(),
+                ErrorCode::AuthInvalidCredentials => "Incorrect username or password.".into(),
                 ErrorCode::AuthLocked => "Account temporarily locked. Try again later.".into(),
                 ErrorCode::AuthForbidden => "You don't have permission to do that.".into(),
                 ErrorCode::AuthRequired => "Please sign in to continue.".into(),
@@ -829,6 +850,36 @@ impl ApiClient {
     }
     pub async fn list_talent_roles(&self) -> Result<Vec<RoleOpenItem>, ApiError> {
         self.get_with_retry("/talent/roles").await
+    }
+    /// Audit #4 Issue #5: recruiter-side role search/filter. All query
+    /// fragments are optional; an all-`None` call is equivalent to
+    /// `list_talent_roles`.
+    pub async fn search_talent_roles(
+        &self,
+        q: Option<&str>,
+        status: Option<&str>,
+        min_years: Option<i32>,
+        skills_csv: Option<&str>,
+    ) -> Result<Vec<RoleOpenItem>, ApiError> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(v) = q.map(str::trim).filter(|s| !s.is_empty()) {
+            parts.push(format!("q={}", urlencode(v)));
+        }
+        if let Some(v) = status.map(str::trim).filter(|s| !s.is_empty()) {
+            parts.push(format!("status={}", urlencode(v)));
+        }
+        if let Some(y) = min_years {
+            parts.push(format!("min_years={y}"));
+        }
+        if let Some(v) = skills_csv.map(str::trim).filter(|s| !s.is_empty()) {
+            parts.push(format!("skills={}", urlencode(v)));
+        }
+        let path = if parts.is_empty() {
+            "/talent/roles".to_string()
+        } else {
+            format!("/talent/roles?{}", parts.join("&"))
+        };
+        self.get_with_retry(&path).await
     }
     pub async fn create_talent_role(&self, req: &CreateRoleRequest) -> Result<RoleOpenItem, ApiError> {
         self.mutate(Method::POST, "/talent/roles", Some(req)).await
