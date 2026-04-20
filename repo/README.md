@@ -111,29 +111,11 @@ First-boot secrets and TLS material are generated automatically by
 `scripts/dev_bootstrap.sh` into the `terraops-runtime` Docker volume. There
 are **no `.env` files** in this repo and none are required.
 
-No manual database-initialization step is required for the canonical
-startup. `docker compose up --build` is fully Docker-contained: the
-`app` container's entrypoint runs migrations and seeds demo accounts
-automatically on first boot (see `Dockerfile.app` CMD and
-`scripts/dev_bootstrap.sh`). The host only needs `docker` (Compose v2)
-and `bash`; no cargo, no psql, no manual reseed command is part of the
-canonical path.
-
-### Optional: force re-seed after startup
-
-If you ever need to reset the demo accounts after the container is
-already running, the idempotent seeder is reachable via the `app`
-container without leaving Docker:
-
-```bash
-docker compose exec app terraops-backend seed
-```
-
-This is **not** part of the canonical startup contract — it is a
-maintenance convenience. `./init_db.sh` is retained as a historical
-wrapper for CI environments that explicitly need to step migration and
-seed separately; the canonical `docker compose up --build` path does
-both automatically without it.
+No manual database-initialization step is required. `docker compose up --build`
+is fully Docker-contained: the `app` container's entrypoint runs migrations
+and seeds demo accounts automatically on first boot (see `Dockerfile.app` CMD
+and `scripts/dev_bootstrap.sh`). The host only needs `docker` (Compose v2)
+and `bash`.
 
 ## Access Method
 
@@ -298,10 +280,7 @@ design budget), and (d) application bytes travel over the handshake.
 `docker compose up --build` runs migrations and seeds the demo
 accounts automatically on first boot (see `Dockerfile.app` CMD). The
 startup path is fully Docker-contained and requires no manual DB
-initialization step. If you need to force a re-seed after startup, the
-idempotent seeder is available inside the running container via
-`docker compose exec app terraops-backend seed`; this is a maintenance
-convenience, not part of the canonical startup contract.
+initialization step.
 
 Demo accounts (all passwords `TerraOps!2026`). **Sign-in is
 username-first**: the login form, `/api/v1/auth/login`, and the audit
@@ -348,9 +327,6 @@ Dockerfile.tests            # scaffold: Rust toolchain only (rust:1.88-bookworm 
                             #           first targets
 run_app.sh                  # convenience wrapper around `docker compose up --build`
 run_tests.sh                # broad test gate (see "Verification Method")
-init_db.sh                  # OPTIONAL historical wrapper (migrations + seed). NOT part
-                            #          of canonical startup; `docker compose up --build`
-                            #          already runs migrations + seed automatically.
 scripts/
   dev_bootstrap.sh          # generates runtime secrets + TLS cert on first boot
   gen_tls_certs.sh          # dev-only self-signed TLS server cert
