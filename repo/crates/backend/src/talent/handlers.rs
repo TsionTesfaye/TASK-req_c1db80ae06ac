@@ -92,6 +92,9 @@ async fn list_candidates(
         &skills_filter,
         query.min_years,
         query.location.as_deref(),
+        query.major.as_deref(),
+        query.min_education.as_deref(),
+        query.availability.as_deref(),
         limit,
         offset,
     )
@@ -191,6 +194,9 @@ async fn get_recommendations(
         &[],
         None,
         None,
+        None,
+        None,
+        None,
         200,
         0,
     )
@@ -216,6 +222,9 @@ async fn get_recommendations(
                 years_experience: c.years_experience,
                 days_since_last_active: days.max(0.0),
                 completeness_raw: c.completeness_score,
+                major: c.major.as_deref(),
+                education: c.education.as_deref(),
+                availability: c.availability.as_deref(),
             };
 
             let scored = if cold_start {
@@ -224,6 +233,9 @@ async fn get_recommendations(
                 let ri = RoleInputs {
                     required_skills: &role.required_skills,
                     min_years: role.min_years,
+                    required_major: role.required_major.as_deref(),
+                    min_education: role.min_education.as_deref(),
+                    required_availability: role.required_availability.as_deref(),
                 };
                 score_blended(&inp, &ri, &blend_weights)
             };

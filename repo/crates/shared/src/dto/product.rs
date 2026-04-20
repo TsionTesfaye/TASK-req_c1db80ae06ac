@@ -12,6 +12,16 @@ use uuid::Uuid;
 pub struct ProductListItem {
     pub id: Uuid,
     pub sku: String,
+    /// Standard Product Unit — grouping key that buckets multiple SKUs
+    /// under one operational product (migration 0012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spu: Option<String>,
+    /// GTIN/UPC/EAN barcode used at register + receiving (migration 0012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barcode: Option<String>,
+    /// Operational freshness window in days (migration 0012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shelf_life_days: Option<i32>,
     pub name: String,
     pub category_id: Option<Uuid>,
     pub category_name: Option<String>,
@@ -29,6 +39,12 @@ pub struct ProductListItem {
 pub struct ProductDetail {
     pub id: Uuid,
     pub sku: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spu: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barcode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shelf_life_days: Option<i32>,
     pub name: String,
     pub description: Option<String>,
     pub category_id: Option<Uuid>,
@@ -54,6 +70,12 @@ pub struct ProductDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateProductRequest {
     pub sku: String,
+    #[serde(default)]
+    pub spu: Option<String>,
+    #[serde(default)]
+    pub barcode: Option<String>,
+    #[serde(default)]
+    pub shelf_life_days: Option<i32>,
     pub name: String,
     pub description: Option<String>,
     pub category_id: Option<Uuid>,
@@ -69,6 +91,12 @@ pub struct CreateProductRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UpdateProductRequest {
     pub sku: Option<String>,
+    #[serde(default)]
+    pub spu: Option<String>,
+    #[serde(default)]
+    pub barcode: Option<String>,
+    #[serde(default)]
+    pub shelf_life_days: Option<i32>,
     pub name: Option<String>,
     pub description: Option<String>,
     pub category_id: Option<Uuid>,

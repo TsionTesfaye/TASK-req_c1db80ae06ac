@@ -106,6 +106,15 @@ pub struct ComputationLineage {
     pub params: Value,
     pub input_observations: Vec<LineageObservation>,
     pub result: f64,
+    /// Alignment quality of the contributing sources (0..1). Present for
+    /// multi-source formulas such as `comfort_index`; `None` for scalar
+    /// formulas that operate on a single source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<f64>,
+    /// Confidence in the computed value (0..1). Combines source-count and
+    /// sample-density factors. `None` for scalar formulas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
     pub window_start: DateTime<Utc>,
     pub window_end: DateTime<Utc>,
     pub computed_at: DateTime<Utc>,

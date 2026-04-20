@@ -159,7 +159,8 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid) -> AppResult<()> {
 // Computations
 // ---------------------------------------------------------------------------
 
-/// Store a completed computation in `metric_computations`.
+/// Store a completed computation in `metric_computations`, including the
+/// optional `alignment` + `confidence` quality dimensions (migration 0023).
 pub async fn save_computation(
     pool: &PgPool,
     definition_id: Uuid,
@@ -167,16 +168,21 @@ pub async fn save_computation(
     inputs: Value,
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
+    alignment: Option<f64>,
+    confidence: Option<f64>,
 ) -> AppResult<Uuid> {
     let row: (Uuid,) = sqlx::query_as(
-        "INSERT INTO metric_computations (definition_id, result, inputs, window_start, window_end) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        "INSERT INTO metric_computations \
+            (definition_id, result, inputs, window_start, window_end, alignment, confidence) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
     )
     .bind(definition_id)
     .bind(result)
     .bind(inputs)
     .bind(window_start)
     .bind(window_end)
+    .bind(alignment)
+    .bind(confidence)
     .fetch_one(pool)
     .await?;
     Ok(row.0)

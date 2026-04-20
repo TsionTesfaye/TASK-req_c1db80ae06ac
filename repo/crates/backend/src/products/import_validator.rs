@@ -51,6 +51,26 @@ pub fn validate_row(raw: &Value) -> Vec<String> {
         }
     }
 
+    // Optional: shelf_life_days — must be a non-negative integer if present
+    if let Some(v) = raw.get("shelf_life_days") {
+        if !v.is_null() {
+            let ok = if let Some(n) = v.as_i64() {
+                n >= 0
+            } else if let Some(s) = v.as_str() {
+                if s.trim().is_empty() {
+                    true
+                } else {
+                    s.trim().parse::<i64>().map(|n| n >= 0).unwrap_or(false)
+                }
+            } else {
+                false
+            };
+            if !ok {
+                errors.push("shelf_life_days: must be a non-negative integer".into());
+            }
+        }
+    }
+
     // Optional: on_shelf — must be boolean-like if present
     if let Some(v) = raw.get("on_shelf") {
         if !v.is_null() && !v.is_boolean() {
@@ -69,7 +89,23 @@ pub fn validate_row(raw: &Value) -> Vec<String> {
 }
 
 /// Convert a validated raw row into a `products` INSERT payload.
-pub fn to_product_fields(raw: &Value) -> (String, String, bool, i32, String) {
+///
+/// Returns tuple with extended fields so the commit path can persist the
+/// full product master-data model (SKU, SPU grouping key, barcode, shelf
+/// life window) in one pass:
+///   (sku, spu, barcode, shelf_life_days, name, on_shelf, price_cents, currency)
+pub fn to_product_fields(
+    raw: &Value,
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    String,
+    bool,
+    i32,
+    String,
+) {
     let sku = raw
         .get("sku")
         .and_then(|v| v.as_str())
@@ -111,7 +147,29 @@ pub fn to_product_fields(raw: &Value) -> (String, String, bool, i32, String) {
         .filter(|s| s.len() == 3)
         .unwrap_or_else(|| "USD".to_string());
 
-    (sku, name, on_shelf, price_cents, currency)
+    let spu = raw
+        .get("spu")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let barcode = raw
+        .get("barcode")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let shelf_life_days = raw.get("shelf_life_days").and_then(|v| {
+        if let Some(n) = v.as_i64() {
+            Some(n as i32)
+        } else if let Some(s) = v.as_str() {
+            s.trim().parse::<i32>().ok()
+        } else {
+            None
+        }
+    });
+
+    (sku, spu, barcode, shelf_life_days, name, on_shelf, price_cents, currency)
 }
 
 #[cfg(test)]
@@ -227,9 +285,12 @@ mod tests {
     #[test]
     fn to_fields_defaults() {
         let r = json!({"sku":"  x ","name":" Y  "});
-        let (sku, name, on_shelf, price, cur) = to_product_fields(&r);
+        let (sku, spu, barcode, shelf, name, on_shelf, price, cur) = to_product_fields(&r);
         assert_eq!(sku, "x");
         assert_eq!(name, "Y");
+        assert!(spu.is_none());
+        assert!(barcode.is_none());
+        assert!(shelf.is_none());
         assert!(on_shelf); // default true
         assert_eq!(price, 0);
         assert_eq!(cur, "USD");
@@ -238,7 +299,7 @@ mod tests {
     #[test]
     fn to_fields_string_on_shelf_false() {
         let r = json!({"sku":"a","name":"b","on_shelf":"false"});
-        let (_, _, on_shelf, _, _) = to_product_fields(&r);
+        let (_, _, _, _, _, on_shelf, _, _) = to_product_fields(&r);
         assert!(!on_shelf);
     }
 
@@ -246,7 +307,7 @@ mod tests {
     fn to_fields_string_on_shelf_true_variants() {
         for v in ["true","1","yes","YES","True"] {
             let r = json!({"sku":"a","name":"b","on_shelf":v});
-            let (_, _, on_shelf, _, _) = to_product_fields(&r);
+            let (_, _, _, _, _, on_shelf, _, _) = to_product_fields(&r);
             assert!(on_shelf, "value {v}");
         }
     }
@@ -254,28 +315,62 @@ mod tests {
     #[test]
     fn to_fields_price_from_string() {
         let r = json!({"sku":"a","name":"b","price_cents":"99"});
-        let (_, _, _, price, _) = to_product_fields(&r);
+        let (_, _, _, _, _, _, price, _) = to_product_fields(&r);
         assert_eq!(price, 99);
     }
 
     #[test]
     fn to_fields_price_garbage_is_zero() {
         let r = json!({"sku":"a","name":"b","price_cents":"abc"});
-        let (_, _, _, price, _) = to_product_fields(&r);
+        let (_, _, _, _, _, _, price, _) = to_product_fields(&r);
         assert_eq!(price, 0);
     }
 
     #[test]
     fn to_fields_currency_normalization() {
         let r = json!({"sku":"a","name":"b","currency":" eur "});
-        let (_, _, _, _, cur) = to_product_fields(&r);
+        let (_, _, _, _, _, _, _, cur) = to_product_fields(&r);
         assert_eq!(cur, "EUR");
     }
 
     #[test]
     fn to_fields_currency_bad_falls_back_usd() {
         let r = json!({"sku":"a","name":"b","currency":"EUROS"});
-        let (_, _, _, _, cur) = to_product_fields(&r);
+        let (_, _, _, _, _, _, _, cur) = to_product_fields(&r);
         assert_eq!(cur, "USD");
+    }
+
+    #[test]
+    fn to_fields_extended_product_master_data() {
+        let r = json!({
+            "sku": "EXT-1", "spu": "GROUP-A",
+            "barcode": " 0123456789012 ", "shelf_life_days": 7,
+            "name": "Milk"
+        });
+        let (sku, spu, barcode, shelf, name, _, _, _) = to_product_fields(&r);
+        assert_eq!(sku, "EXT-1");
+        assert_eq!(spu.as_deref(), Some("GROUP-A"));
+        assert_eq!(barcode.as_deref(), Some("0123456789012"));
+        assert_eq!(shelf, Some(7));
+        assert_eq!(name, "Milk");
+    }
+
+    #[test]
+    fn to_fields_shelf_life_from_string() {
+        let r = json!({"sku":"a","name":"b","shelf_life_days":"14"});
+        let (_, _, _, shelf, _, _, _, _) = to_product_fields(&r);
+        assert_eq!(shelf, Some(14));
+    }
+
+    #[test]
+    fn negative_shelf_life_errors() {
+        let r = json!({"sku":"a","name":"b","shelf_life_days":-3});
+        assert!(validate_row(&r).iter().any(|e| e.contains("shelf_life_days")));
+    }
+
+    #[test]
+    fn unparseable_shelf_life_errors() {
+        let r = json!({"sku":"a","name":"b","shelf_life_days":"xyz"});
+        assert!(validate_row(&r).iter().any(|e| e.contains("shelf_life_days")));
     }
 }

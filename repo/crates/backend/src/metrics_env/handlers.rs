@@ -337,6 +337,8 @@ async fn get_series(
                                 &pts,
                                 window_start,
                                 now,
+                                None,
+                                None,
                             );
                             terraops_shared::dto::metric::SeriesPoint { at: now, value: v }
                         },
@@ -353,6 +355,8 @@ async fn get_series(
                             &pts,
                             window_start,
                             now,
+                            None,
+                            None,
                         );
                         terraops_shared::dto::metric::SeriesPoint { at: now, value: v }
                     })
@@ -373,24 +377,49 @@ async fn get_series(
                             now,
                         )
                         .await?;
-                        super::formula::comfort_index(
+                        // Optional 3rd source: air speed (m/s). Missing is
+                        // tolerated — the extended formula returns lower
+                        // confidence rather than None.
+                        let air_pts = if def.source_ids.len() >= 3 {
+                            Some(
+                                sources::fetch_window(
+                                    &state.pool,
+                                    def.source_ids[2],
+                                    window_start,
+                                    now,
+                                )
+                                .await?,
+                            )
+                        } else {
+                            None
+                        };
+                        super::formula::comfort_index_ext(
                             &temp_pts,
                             &hum_pts,
+                            air_pts.as_deref(),
                             def.window_seconds as i64,
                             now,
                         )
-                        .map(|v| {
-                            let all_pts: Vec<_> =
+                        .map(|out| {
+                            let mut all_pts: Vec<_> =
                                 temp_pts.iter().chain(hum_pts.iter()).cloned().collect();
+                            if let Some(a) = air_pts.as_ref() {
+                                all_pts.extend(a.iter().cloned());
+                            }
                             persist_computation_bg(
                                 state.pool.clone(),
                                 def_id,
-                                v,
+                                out.value,
                                 &all_pts,
                                 window_start,
                                 now,
+                                Some(out.alignment),
+                                Some(out.confidence),
                             );
-                            terraops_shared::dto::metric::SeriesPoint { at: now, value: v }
+                            terraops_shared::dto::metric::SeriesPoint {
+                                at: now,
+                                value: out.value,
+                            }
                         })
                     } else {
                         None
@@ -417,6 +446,9 @@ async fn get_series(
 }
 
 /// Fire-and-forget: persist a computation result in the background.
+/// `alignment` and `confidence` are optional — moving_average and
+/// rate_of_change pass `None`; comfort_index_ext passes the real values.
+#[allow(clippy::too_many_arguments)]
 fn persist_computation_bg(
     pool: sqlx::postgres::PgPool,
     definition_id: Uuid,
@@ -424,6 +456,8 @@ fn persist_computation_bg(
     pts: &[(DateTime<Utc>, f64)],
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
+    alignment: Option<f64>,
+    confidence: Option<f64>,
 ) {
     let inputs: Value = serde_json::json!(pts
         .iter()
@@ -433,7 +467,10 @@ fn persist_computation_bg(
     let we = window_end;
     let did = definition_id;
     tokio::spawn(async move {
-        let _ = definitions::save_computation(&pool, did, result, inputs, ws, we).await;
+        let _ = definitions::save_computation(
+            &pool, did, result, inputs, ws, we, alignment, confidence,
+        )
+        .await;
     });
 }
 

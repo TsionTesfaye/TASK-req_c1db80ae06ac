@@ -160,6 +160,9 @@ struct WatchlistItemRow {
     skills: Vec<String>,
     completeness_score: i32,
     last_active_at: DateTime<Utc>,
+    major: Option<String>,
+    education: Option<String>,
+    availability: Option<String>,
     added_at: DateTime<Utc>,
 }
 
@@ -170,7 +173,8 @@ pub async fn list_items(
 ) -> Result<Vec<WatchlistEntry>, AppError> {
     let rows = sqlx::query_as::<_, WatchlistItemRow>(
         "SELECT c.id, c.full_name, c.email_mask, c.location, c.years_experience, \
-         c.skills, c.completeness_score, c.last_active_at, twi.added_at \
+         c.skills, c.completeness_score, c.last_active_at, \
+         c.major, c.education, c.availability, twi.added_at \
          FROM talent_watchlist_items twi \
          JOIN candidates c ON c.id = twi.candidate_id \
          WHERE twi.watchlist_id = $1 AND c.deleted_at IS NULL \
@@ -192,6 +196,9 @@ pub async fn list_items(
                 skills: r.skills,
                 completeness_score: r.completeness_score,
                 last_active_at: r.last_active_at,
+                major: r.major,
+                education: r.education,
+                availability: r.availability,
             },
             added_at: r.added_at,
         })

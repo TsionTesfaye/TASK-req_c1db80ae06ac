@@ -16,6 +16,9 @@ use terraops_shared::dto::product::{ExportKind, ExportRequest};
 struct ExportRow {
     id: Uuid,
     sku: String,
+    spu: Option<String>,
+    barcode: Option<String>,
+    shelf_life_days: Option<i32>,
     name: String,
     description: Option<String>,
     on_shelf: bool,
@@ -40,7 +43,8 @@ pub async fn export_products(
     let q_like = filter.q.as_ref().map(|v| format!("%{v}%"));
 
     let rows: Vec<ExportRow> = sqlx::query_as::<_, ExportRow>(
-        "SELECT p.id, p.sku, p.name, p.description, p.on_shelf, p.price_cents, p.currency,
+        "SELECT p.id, p.sku, p.spu, p.barcode, p.shelf_life_days,
+                p.name, p.description, p.on_shelf, p.price_cents, p.currency,
                 c.name AS category_name, br.name AS brand_name,
                 s.code AS site_code, d.code AS department_code, p.updated_at
          FROM products p
@@ -75,7 +79,8 @@ pub async fn export_products(
 fn export_csv(rows: Vec<ExportRow>) -> AppResult<HttpResponse> {
     let mut wtr = csv::Writer::from_writer(vec![]);
     wtr.write_record([
-        "id", "sku", "name", "description", "on_shelf", "price_cents",
+        "id", "sku", "spu", "barcode", "shelf_life_days",
+        "name", "description", "on_shelf", "price_cents",
         "currency", "category", "brand", "site", "department", "updated_at",
     ])
     .ok();
@@ -83,6 +88,9 @@ fn export_csv(rows: Vec<ExportRow>) -> AppResult<HttpResponse> {
         wtr.write_record([
             r.id.to_string(),
             r.sku,
+            r.spu.unwrap_or_default(),
+            r.barcode.unwrap_or_default(),
+            r.shelf_life_days.map(|n| n.to_string()).unwrap_or_default(),
             r.name,
             r.description.unwrap_or_default(),
             r.on_shelf.to_string(),
@@ -110,7 +118,8 @@ fn export_xlsx(rows: Vec<ExportRow>) -> AppResult<HttpResponse> {
     let ws = wb.add_worksheet();
 
     let headers = [
-        "ID", "SKU", "Name", "Description", "On Shelf", "Price (cents)",
+        "ID", "SKU", "SPU", "Barcode", "Shelf Life (days)",
+        "Name", "Description", "On Shelf", "Price (cents)",
         "Currency", "Category", "Brand", "Site", "Department", "Updated At",
     ];
     for (col, h) in headers.iter().enumerate() {
@@ -120,16 +129,22 @@ fn export_xlsx(rows: Vec<ExportRow>) -> AppResult<HttpResponse> {
         let row = (i + 1) as u32;
         ws.write_string(row, 0, &r.id.to_string()).ok();
         ws.write_string(row, 1, &r.sku).ok();
-        ws.write_string(row, 2, &r.name).ok();
-        ws.write_string(row, 3, r.description.as_deref().unwrap_or("")).ok();
-        ws.write_boolean(row, 4, r.on_shelf).ok();
-        ws.write_number(row, 5, r.price_cents as f64).ok();
-        ws.write_string(row, 6, &r.currency).ok();
-        ws.write_string(row, 7, r.category_name.as_deref().unwrap_or("")).ok();
-        ws.write_string(row, 8, r.brand_name.as_deref().unwrap_or("")).ok();
-        ws.write_string(row, 9, r.site_code.as_deref().unwrap_or("")).ok();
-        ws.write_string(row, 10, r.department_code.as_deref().unwrap_or("")).ok();
-        ws.write_string(row, 11, &r.updated_at.to_rfc3339()).ok();
+        ws.write_string(row, 2, r.spu.as_deref().unwrap_or("")).ok();
+        ws.write_string(row, 3, r.barcode.as_deref().unwrap_or("")).ok();
+        match r.shelf_life_days {
+            Some(n) => { ws.write_number(row, 4, n as f64).ok(); }
+            None => { ws.write_string(row, 4, "").ok(); }
+        }
+        ws.write_string(row, 5, &r.name).ok();
+        ws.write_string(row, 6, r.description.as_deref().unwrap_or("")).ok();
+        ws.write_boolean(row, 7, r.on_shelf).ok();
+        ws.write_number(row, 8, r.price_cents as f64).ok();
+        ws.write_string(row, 9, &r.currency).ok();
+        ws.write_string(row, 10, r.category_name.as_deref().unwrap_or("")).ok();
+        ws.write_string(row, 11, r.brand_name.as_deref().unwrap_or("")).ok();
+        ws.write_string(row, 12, r.site_code.as_deref().unwrap_or("")).ok();
+        ws.write_string(row, 13, r.department_code.as_deref().unwrap_or("")).ok();
+        ws.write_string(row, 14, &r.updated_at.to_rfc3339()).ok();
     }
 
     let data = wb.save_to_buffer().unwrap_or_default();

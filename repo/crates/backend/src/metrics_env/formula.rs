@@ -16,20 +16,32 @@
 //! zero.
 //!
 //! ## comfort_index
-//! Standard Effective Temperature formula for occupant comfort:
-//!   `index = T - 0.55 × (1 - RH/100) × (T - 14.5)`
-//! where `T` is temperature_c (latest value from sources[0]) and
-//! `RH` is humidity_pct (latest value from sources[1]).
-//! Result is clamped to `[-20.0, 50.0]`.
+//! Occupant comfort index (extended Missenard with air-speed cooling):
 //!
-//! Reference: Missenard (1937) comfort index widely used in building
-//! management systems. The formula is self-documenting; no external library
-//! is needed.
+//!   base     = T - 0.55 × (1 - RH/100) × (T - 14.5)
+//!   cooling  = 1.8 × sqrt(max(0, V - 0.1))   (for V > 0.1 m/s)
+//!   index    = clamp(base - cooling, -20.0, 50.0)
 //!
-//! The `params` JSONB field for `comfort_index` is intentionally empty `{}`
-//! because the formula has no user-configurable parameters beyond the source
-//! selection (temperature source at index 0, humidity source at index 1 in
-//! the `source_ids` array of the definition).
+//! where:
+//!   * `T`  — temperature °C (latest value from sources[0])
+//!   * `RH` — relative humidity % (latest value from sources[1])
+//!   * `V`  — air speed m/s (latest value from sources[2], optional)
+//!
+//! When no air-speed source is attached (definition uses only 2 sources),
+//! the cooling term is zero and the output matches the base Missenard index.
+//!
+//! The computation also returns two quality dimensions:
+//!   * `alignment`  — 0..1, how well the latest sample timestamps of the
+//!                    contributing sources line up with the computation
+//!                    instant `at`. 1.0 = all sources fresh, 0.0 = one or
+//!                    more sources are a full window old. Captures
+//!                    temporal drift between input sensors.
+//!   * `confidence` — 0..1, combines source count (2 vs 3 sources present)
+//!                    and sample density within the window. Lets dashboards
+//!                    mark air-speed-missing comfort as "partial" without
+//!                    throwing the value away.
+//!
+//! References: Missenard (1937); ASHRAE 55 simplified air-speed cooling.
 
 use chrono::{DateTime, Utc};
 
@@ -94,42 +106,113 @@ pub fn rate_of_change(
     Some((v_last - v_first) / dt_seconds)
 }
 
-/// Compute the comfort index (Standard Effective Temperature approximation).
+/// Full output of the comfort-index computation, including the alignment
+/// and confidence quality dimensions the audit contract requires.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComfortOutput {
+    pub value: f64,
+    /// 0..1 — how well the latest sample timestamps from each source line
+    /// up with `at`. 1.0 = every source is fresh, 0.0 = at least one
+    /// source is a full window old.
+    pub alignment: f64,
+    /// 0..1 — combines source count (2 vs 3) with sample density within
+    /// the window. Tuned so dense three-source comfort scores close to
+    /// 1.0, and partial two-source comfort scores ~0.6.
+    pub confidence: f64,
+}
+
+/// Compute the comfort index (temperature + humidity + optional air speed).
 ///
-/// Expects `window` to contain two distinct sources interleaved:
-///   * `temp_window` — temperature values in °C (from sources[0])
-///   * `humidity_window` — relative humidity in % (from sources[1])
-///
-/// Uses the *latest* value from each source within the window.
-///
-/// Formula: `index = T - 0.55 × (1 - RH/100) × (T - 14.5)`
-/// Clamped to `[-20.0, 50.0]`.
-///
-/// Returns `None` if either source has no values in the window.
+/// Uses the *latest* value from each source within the window. Returns
+/// `None` if either required source (temperature or humidity) has no
+/// values in the window. Air speed is optional: when present, it
+/// contributes a cooling term and increases the confidence score.
+pub fn comfort_index_ext(
+    temp_window: &[WindowPoint],
+    humidity_window: &[WindowPoint],
+    air_speed_window: Option<&[WindowPoint]>,
+    window_seconds: i64,
+    at: DateTime<Utc>,
+) -> Option<ComfortOutput> {
+    let cutoff = at - chrono::Duration::seconds(window_seconds);
+
+    let latest_in = |w: &[WindowPoint]| {
+        w.iter()
+            .filter(|(ts, _)| *ts >= cutoff && *ts <= at)
+            .max_by_key(|(ts, _)| *ts)
+            .map(|(ts, v)| (*ts, *v))
+    };
+
+    let (temp_ts, t) = latest_in(temp_window)?;
+    let (hum_ts, rh) = latest_in(humidity_window)?;
+
+    // Extended Missenard base term.
+    let base = t - 0.55 * (1.0 - rh / 100.0) * (t - 14.5);
+
+    // Optional air-speed cooling term (ASHRAE-55 simplified).
+    let (cooling, air_ts, has_air) = match air_speed_window.and_then(latest_in) {
+        Some((ts, v)) => {
+            let above = (v - 0.1).max(0.0);
+            (1.8 * above.sqrt(), Some(ts), true)
+        }
+        None => (0.0, None, false),
+    };
+
+    let value = (base - cooling).clamp(-20.0, 50.0);
+
+    // Alignment: derived from the staleness of the *least fresh* source.
+    // offset_ratio = staleness / window_seconds, clamped to [0,1].
+    let window_f = window_seconds.max(1) as f64;
+    let staleness = |ts: DateTime<Utc>| {
+        ((at - ts).num_milliseconds() as f64 / 1000.0 / window_f)
+            .clamp(0.0, 1.0)
+    };
+    let mut worst_offset = staleness(temp_ts).max(staleness(hum_ts));
+    if let Some(ts) = air_ts {
+        worst_offset = worst_offset.max(staleness(ts));
+    }
+    let alignment = (1.0 - worst_offset).clamp(0.0, 1.0);
+
+    // Confidence: source-count factor × sample-density factor.
+    // Source count: 2 sources = 0.66, 3 sources = 1.0.
+    let src_factor = if has_air { 1.0 } else { 2.0 / 3.0 };
+    // Sample density: count samples across all sources, compared to a
+    // tuned target. A single in-window sample per source already gives
+    // full density credit (since comfort uses latest-in-window). Extra
+    // samples do not penalize the score; fewer than one sample leaves
+    // the source out entirely (None result above).
+    let expected_per_source = 1.0_f64;
+    let count_in = |w: &[WindowPoint]| {
+        w.iter()
+            .filter(|(ts, _)| *ts >= cutoff && *ts <= at)
+            .count() as f64
+    };
+    let t_density = (count_in(temp_window) / expected_per_source).min(1.0);
+    let h_density = (count_in(humidity_window) / expected_per_source).min(1.0);
+    let a_density = air_speed_window
+        .map(|w| (count_in(w) / expected_per_source).min(1.0))
+        .unwrap_or(1.0); // not contributing when missing
+    let density_factor = if has_air {
+        (t_density + h_density + a_density) / 3.0
+    } else {
+        (t_density + h_density) / 2.0
+    };
+    let confidence = (src_factor * density_factor).clamp(0.0, 1.0);
+
+    Some(ComfortOutput { value, alignment, confidence })
+}
+
+/// Backward-compatible two-source comfort index returning only the scalar
+/// value. New code should prefer `comfort_index_ext` to also surface
+/// alignment + confidence.
 pub fn comfort_index(
     temp_window: &[WindowPoint],
     humidity_window: &[WindowPoint],
     window_seconds: i64,
     at: DateTime<Utc>,
 ) -> Option<f64> {
-    let cutoff = at - chrono::Duration::seconds(window_seconds);
-
-    let latest_temp = temp_window
-        .iter()
-        .filter(|(ts, _)| *ts >= cutoff && *ts <= at)
-        .max_by_key(|(ts, _)| *ts)
-        .map(|(_, v)| *v)?;
-
-    let latest_humidity = humidity_window
-        .iter()
-        .filter(|(ts, _)| *ts >= cutoff && *ts <= at)
-        .max_by_key(|(ts, _)| *ts)
-        .map(|(_, v)| *v)?;
-
-    let t = latest_temp;
-    let rh = latest_humidity;
-    let raw = t - 0.55 * (1.0 - rh / 100.0) * (t - 14.5);
-    Some(raw.clamp(-20.0, 50.0))
+    comfort_index_ext(temp_window, humidity_window, None, window_seconds, at)
+        .map(|o| o.value)
 }
 
 #[cfg(test)]
@@ -264,6 +347,61 @@ mod tests {
         let humidity = vec![(ts(0), 100.0)];
         let result = comfort_index(&temp, &humidity, 3600, ts(100)).unwrap();
         assert_eq!(result, -20.0);
+    }
+
+    #[test]
+    fn ci_ext_two_source_matches_legacy_and_partial_confidence() {
+        // T=22, RH=60, no air_speed → value=20.35, confidence reflects 2/3.
+        let temp = vec![(ts(100), 22.0)];
+        let humidity = vec![(ts(100), 60.0)];
+        let out = comfort_index_ext(&temp, &humidity, None, 3600, ts(100)).unwrap();
+        assert!((out.value - 20.35).abs() < 1e-9);
+        // Perfect alignment (ts == at).
+        assert!((out.alignment - 1.0).abs() < 1e-9);
+        // src_factor = 2/3; density capped at 1.0 per source => confidence = 2/3 * (0.5+0.5)/... etc.
+        assert!(out.confidence < 1.0);
+        assert!(out.confidence > 0.0);
+    }
+
+    #[test]
+    fn ci_ext_three_source_applies_air_cooling() {
+        // T=25, RH=50, V=1.5 m/s → cooling ≈ 1.8 * sqrt(1.4) ≈ 2.13
+        // base = 25 - 0.55*(0.5)*(10.5) = 25 - 2.8875 = 22.1125
+        // value ≈ 22.1125 - 2.1295 ≈ 19.98
+        let temp = vec![(ts(100), 25.0)];
+        let humidity = vec![(ts(100), 50.0)];
+        let air = vec![(ts(100), 1.5)];
+        let out = comfort_index_ext(&temp, &humidity, Some(&air), 3600, ts(100)).unwrap();
+        let expected_base = 25.0 - 0.55 * 0.5 * 10.5;
+        let expected_cool = 1.8 * (1.4_f64).sqrt();
+        assert!((out.value - (expected_base - expected_cool)).abs() < 1e-6);
+        assert!(out.confidence > 0.6); // three-source should outperform two-source
+    }
+
+    #[test]
+    fn ci_ext_alignment_drops_with_stale_source() {
+        // temp is fresh (ts=100), humidity is half a window stale (ts=50).
+        // window=100 → humidity staleness = 50/100 = 0.5 → alignment = 0.5.
+        let temp = vec![(ts(100), 22.0)];
+        let humidity = vec![(ts(50), 60.0)];
+        let out = comfort_index_ext(&temp, &humidity, None, 100, ts(100)).unwrap();
+        assert!((out.alignment - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ci_ext_missing_required_source_returns_none() {
+        let humidity = vec![(ts(100), 50.0)];
+        assert!(comfort_index_ext(&[], &humidity, None, 3600, ts(100)).is_none());
+    }
+
+    #[test]
+    fn ci_ext_air_cooling_zero_below_threshold() {
+        // V=0.05 m/s → below 0.1 threshold → cooling term == 0
+        let temp = vec![(ts(100), 22.0)];
+        let humidity = vec![(ts(100), 60.0)];
+        let air = vec![(ts(100), 0.05)];
+        let out = comfort_index_ext(&temp, &humidity, Some(&air), 3600, ts(100)).unwrap();
+        assert!((out.value - 20.35).abs() < 1e-9);
     }
 
     #[test]

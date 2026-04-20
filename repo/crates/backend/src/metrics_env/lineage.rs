@@ -21,10 +21,13 @@ pub async fn get(pool: &PgPool, computation_id: Uuid) -> AppResult<ComputationLi
         inputs: Value,
         window_start: DateTime<Utc>,
         window_end: DateTime<Utc>,
+        alignment: Option<f64>,
+        confidence: Option<f64>,
     }
 
     let comp: CompRow = sqlx::query_as(
-        "SELECT id, definition_id, computed_at, result, inputs, window_start, window_end \
+        "SELECT id, definition_id, computed_at, result, inputs, window_start, window_end, \
+                alignment, confidence \
          FROM metric_computations WHERE id = $1",
     )
     .bind(computation_id)
@@ -56,6 +59,8 @@ pub async fn get(pool: &PgPool, computation_id: Uuid) -> AppResult<ComputationLi
         params: def.params,
         input_observations: input_obs,
         result: comp.result,
+        alignment: comp.alignment,
+        confidence: comp.confidence,
         window_start: comp.window_start,
         window_end: comp.window_end,
         computed_at: comp.computed_at,

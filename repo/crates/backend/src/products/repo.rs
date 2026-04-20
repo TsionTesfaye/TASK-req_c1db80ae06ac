@@ -15,6 +15,9 @@ use terraops_shared::dto::product::{ProductDetail, ProductFilter, ProductListIte
 pub struct ProductRow {
     pub id: Uuid,
     pub sku: String,
+    pub spu: Option<String>,
+    pub barcode: Option<String>,
+    pub shelf_life_days: Option<i32>,
     pub name: String,
     pub description: Option<String>,
     pub category_id: Option<Uuid>,
@@ -52,7 +55,8 @@ pub async fn list_products(
     };
 
     let q = format!(
-        "SELECT p.id, p.sku, p.name, c.name AS category_name, p.category_id,
+        "SELECT p.id, p.sku, p.spu, p.barcode, p.shelf_life_days, p.name,
+                c.name AS category_name, p.category_id,
                 br.name AS brand_name, p.brand_id, p.on_shelf, p.price_cents, p.currency,
                 p.site_id, p.department_id, p.updated_at
          FROM products p
@@ -64,18 +68,22 @@ pub async fn list_products(
            AND ($3::UUID IS NULL OR p.category_id = $3)
            AND ($4::UUID IS NULL OR p.brand_id = $4)
            AND ($5::BOOLEAN IS NULL OR p.on_shelf = $5)
-           AND ($6::TEXT IS NULL OR p.name ILIKE $6 OR p.sku ILIKE $6)
+           AND ($6::TEXT IS NULL OR p.name ILIKE $6 OR p.sku ILIKE $6 OR p.barcode = $7 OR p.spu ILIKE $6)
          ORDER BY {sort_col} DESC
-         LIMIT $7 OFFSET $8"
+         LIMIT $8 OFFSET $9"
     );
 
     let q_like = filter.q.as_ref().map(|v| format!("%{v}%"));
+    let q_exact = filter.q.as_ref().map(|v| v.trim().to_string());
     let offset = (page - 1) as i64 * page_size as i64;
 
     #[derive(FromRow)]
     struct Row {
         id: Uuid,
         sku: String,
+        spu: Option<String>,
+        barcode: Option<String>,
+        shelf_life_days: Option<i32>,
         name: String,
         category_name: Option<String>,
         category_id: Option<Uuid>,
@@ -96,6 +104,7 @@ pub async fn list_products(
         .bind(filter.brand_id)
         .bind(filter.on_shelf)
         .bind(q_like.as_deref())
+        .bind(q_exact.as_deref())
         .bind(page_size as i64)
         .bind(offset)
         .fetch_all(pool)
@@ -108,9 +117,10 @@ pub async fn list_products(
            AND ($3::UUID IS NULL OR p.category_id = $3)
            AND ($4::UUID IS NULL OR p.brand_id = $4)
            AND ($5::BOOLEAN IS NULL OR p.on_shelf = $5)
-           AND ($6::TEXT IS NULL OR p.name ILIKE $6 OR p.sku ILIKE $6)";
+           AND ($6::TEXT IS NULL OR p.name ILIKE $6 OR p.sku ILIKE $6 OR p.barcode = $7 OR p.spu ILIKE $6)";
 
     let q_like2 = filter.q.as_ref().map(|v| format!("%{v}%"));
+    let q_exact2 = filter.q.as_ref().map(|v| v.trim().to_string());
     let total: (i64,) = sqlx::query_as(count_q)
         .bind(filter.site_id)
         .bind(filter.department_id)
@@ -118,6 +128,7 @@ pub async fn list_products(
         .bind(filter.brand_id)
         .bind(filter.on_shelf)
         .bind(q_like2.as_deref())
+        .bind(q_exact2.as_deref())
         .fetch_one(pool)
         .await?;
 
@@ -126,6 +137,9 @@ pub async fn list_products(
         .map(|r| ProductListItem {
             id: r.id,
             sku: r.sku,
+            spu: r.spu,
+            barcode: r.barcode,
+            shelf_life_days: r.shelf_life_days,
             name: r.name,
             category_id: r.category_id,
             category_name: r.category_name,
@@ -149,7 +163,8 @@ pub async fn list_products(
 
 pub async fn get_product_by_id(pool: &PgPool, id: Uuid) -> AppResult<Option<ProductRow>> {
     let row: Option<ProductRow> = sqlx::query_as::<_, ProductRow>(
-        "SELECT id, sku, name, description, category_id, brand_id, unit_id,
+        "SELECT id, sku, spu, barcode, shelf_life_days, name, description,
+                category_id, brand_id, unit_id,
                 site_id, department_id, on_shelf, price_cents, currency,
                 created_at, updated_at, deleted_at, created_by, updated_by
          FROM products WHERE id = $1",
@@ -280,6 +295,9 @@ pub async fn get_product_detail(
     Ok(Some(ProductDetail {
         id: row.id,
         sku: row.sku,
+        spu: row.spu,
+        barcode: row.barcode,
+        shelf_life_days: row.shelf_life_days,
         name: row.name,
         description: row.description,
         category_id: row.category_id,
@@ -307,9 +325,13 @@ pub async fn get_product_detail(
 // Insert product
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_product(
     pool: &PgPool,
     sku: &str,
+    spu: Option<&str>,
+    barcode: Option<&str>,
+    shelf_life_days: Option<i32>,
     name: &str,
     description: Option<&str>,
     category_id: Option<Uuid>,
@@ -323,13 +345,17 @@ pub async fn insert_product(
     created_by: Uuid,
 ) -> AppResult<Uuid> {
     let row: (Uuid,) = sqlx::query_as(
-        "INSERT INTO products (sku, name, description, category_id, brand_id, unit_id,
+        "INSERT INTO products (sku, spu, barcode, shelf_life_days,
+                               name, description, category_id, brand_id, unit_id,
                                site_id, department_id, on_shelf, price_cents, currency,
                                created_by, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
          RETURNING id",
     )
     .bind(sku)
+    .bind(spu)
+    .bind(barcode)
+    .bind(shelf_life_days)
     .bind(name)
     .bind(description)
     .bind(category_id)
@@ -350,10 +376,14 @@ pub async fn insert_product(
 // Update product
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_product_fields(
     pool: &PgPool,
     id: Uuid,
     sku: Option<&str>,
+    spu: Option<Option<&str>>,
+    barcode: Option<Option<&str>>,
+    shelf_life_days: Option<Option<i32>>,
     name: Option<&str>,
     description: Option<Option<&str>>,
     category_id: Option<Option<Uuid>>,
@@ -369,6 +399,24 @@ pub async fn update_product_fields(
     let mut sets: Vec<String> = vec!["updated_at = NOW()".to_string(), format!("updated_by = '{updated_by}'")];
 
     if let Some(v) = sku { sets.push(format!("sku = '{}'", v.replace('\'', "''"))); }
+    if let Some(v) = spu {
+        match v {
+            Some(s) => sets.push(format!("spu = '{}'", s.replace('\'', "''"))),
+            None => sets.push("spu = NULL".to_string()),
+        }
+    }
+    if let Some(v) = barcode {
+        match v {
+            Some(s) => sets.push(format!("barcode = '{}'", s.replace('\'', "''"))),
+            None => sets.push("barcode = NULL".to_string()),
+        }
+    }
+    if let Some(v) = shelf_life_days {
+        match v {
+            Some(n) => sets.push(format!("shelf_life_days = {n}")),
+            None => sets.push("shelf_life_days = NULL".to_string()),
+        }
+    }
     if let Some(v) = name { sets.push(format!("name = '{}'", v.replace('\'', "''"))); }
     if let Some(v) = description {
         match v {
@@ -492,7 +540,9 @@ pub async fn product_snapshot(pool: &PgPool, id: Uuid) -> AppResult<serde_json::
     let row: Option<ProductRow> = get_product_by_id(pool, id).await?;
     match row {
         Some(r) => Ok(serde_json::json!({
-            "sku": r.sku, "name": r.name, "description": r.description,
+            "sku": r.sku, "spu": r.spu, "barcode": r.barcode,
+            "shelf_life_days": r.shelf_life_days,
+            "name": r.name, "description": r.description,
             "on_shelf": r.on_shelf, "price_cents": r.price_cents,
             "currency": r.currency, "category_id": r.category_id,
             "brand_id": r.brand_id, "site_id": r.site_id,

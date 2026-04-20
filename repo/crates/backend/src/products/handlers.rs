@@ -129,9 +129,19 @@ async fn create_product(
         return Err(AppError::Validation("name required".into()));
     }
 
+    // Optional: validate shelf_life_days is non-negative when provided.
+    if let Some(n) = req.shelf_life_days {
+        if n < 0 {
+            return Err(AppError::Validation("shelf_life_days must be >= 0".into()));
+        }
+    }
+
     let product_id = repo::insert_product(
         &state.pool,
         req.sku.trim(),
+        req.spu.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        req.barcode.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        req.shelf_life_days,
         req.name.trim(),
         req.description.as_deref(),
         req.category_id,
@@ -196,10 +206,25 @@ async fn update_product(
     let before = repo::product_snapshot(&state.pool, id).await?;
     let req = body.into_inner();
 
+    if let Some(n) = req.shelf_life_days {
+        if n < 0 {
+            return Err(AppError::Validation("shelf_life_days must be >= 0".into()));
+        }
+    }
+
     let updated = repo::update_product_fields(
         &state.pool,
         id,
         req.sku.as_deref(),
+        req.spu.as_ref().map(|s| {
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(t) }
+        }),
+        req.barcode.as_ref().map(|s| {
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(t) }
+        }),
+        req.shelf_life_days.map(Some),
         req.name.as_deref(),
         req.description.as_ref().map(|s| Some(s.as_str())),
         req.category_id.map(Some),

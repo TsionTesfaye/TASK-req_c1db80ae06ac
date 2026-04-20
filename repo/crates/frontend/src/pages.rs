@@ -242,11 +242,29 @@ pub mod auth {
 }
 
 // ===========================================================================
-// dashboard::Home (minimal P1 placeholder, owned by main; P-B takes over later)
+// dashboard::Home — role-aware KPI landing page.
+//
+// Replaces the earlier P1 placeholder card. The home screen now surfaces
+// real operational numbers pulled from the KPI summary endpoint (K1) for
+// any user with `kpi.read`, plus a role-contextual action strip below.
+// Users who lack `kpi.read` still land here and get a compact self card
+// plus role-specific quick links so no signed-in user is ever stuck on
+// a placeholder.
 // ===========================================================================
 
 pub mod dashboard {
     use super::*;
+
+    use crate::api::ApiError;
+    use terraops_shared::dto::kpi::KpiSummary;
+
+    #[derive(Clone, PartialEq)]
+    enum KpiLoad {
+        Loading,
+        Loaded(KpiSummary),
+        NotPermitted,
+        Failed(String),
+    }
 
     #[function_component(Home)]
     pub fn home() -> Html {
@@ -254,9 +272,96 @@ pub mod dashboard {
         let Some(state) = auth.state.as_ref().cloned() else {
             return html! { <Redirect<Route> to={Route::Login} /> };
         };
+
+        let has_kpi = state.has_permission("kpi.read");
+        let kpi_state = use_state(|| {
+            if has_kpi {
+                KpiLoad::Loading
+            } else {
+                KpiLoad::NotPermitted
+            }
+        });
+
+        {
+            let kpi_state = kpi_state.clone();
+            let api = auth.api();
+            use_effect_with(has_kpi, move |&has| {
+                if has {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match api.kpi_summary().await {
+                            Ok(s) => kpi_state.set(KpiLoad::Loaded(s)),
+                            Err(ApiError::Api { code, message, .. }) => {
+                                if code == terraops_shared::error::ErrorCode::AuthForbidden {
+                                    kpi_state.set(KpiLoad::NotPermitted);
+                                } else {
+                                    kpi_state.set(KpiLoad::Failed(message));
+                                }
+                            }
+                            Err(e) => kpi_state.set(KpiLoad::Failed(e.user_facing())),
+                        }
+                    });
+                }
+                || ()
+            });
+        }
+
+        let kpi_block = match &*kpi_state {
+            KpiLoad::Loading => html! {
+                <article class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Operational KPIs" }</h2>
+                    <PlaceholderLoading/>
+                </article>
+            },
+            KpiLoad::Loaded(s) => html! {
+                <article class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Operational KPIs" }</h2>
+                    <div class="tx-kpi-grid">
+                        <div class="tx-kpi">
+                            <div class="tx-kpi__label">{ "Avg cycle time" }</div>
+                            <div class="tx-kpi__value">{ format!("{:.1} h", s.cycle_time_avg_hours) }</div>
+                        </div>
+                        <div class="tx-kpi">
+                            <div class="tx-kpi__label">{ "Funnel conversion" }</div>
+                            <div class="tx-kpi__value">{ format!("{:.1}%", s.funnel_conversion_pct) }</div>
+                        </div>
+                        <div class="tx-kpi">
+                            <div class="tx-kpi__label">{ "Anomalies (24h)" }</div>
+                            <div class="tx-kpi__value">{ s.anomaly_count }</div>
+                        </div>
+                        <div class="tx-kpi">
+                            <div class="tx-kpi__label">{ "Efficiency index" }</div>
+                            <div class="tx-kpi__value">{ format!("{:.2}", s.efficiency_index) }</div>
+                        </div>
+                    </div>
+                    <p class="tx-subtle tx-hint">
+                        { format!("As of {}", s.generated_at.format("%Y-%m-%d %H:%M UTC")) }
+                    </p>
+                    <Link<Route> to={Route::Kpi} classes={classes!("tx-btn", "tx-btn--ghost")}>
+                        { "Open KPI workspace" }
+                    </Link<Route>>
+                </article>
+            },
+            KpiLoad::NotPermitted => html! {
+                <article class="tx-card tx-card--hint">
+                    <h2 class="tx-title tx-title--sm">{ "KPI workspace" }</h2>
+                    <p class="tx-subtle">
+                        { "Your role does not include KPI access. \
+                           Quick links for your role appear below." }
+                    </p>
+                </article>
+            },
+            KpiLoad::Failed(msg) => html! {
+                <article class="tx-card">
+                    <h2 class="tx-title tx-title--sm">{ "Operational KPIs" }</h2>
+                    <PlaceholderError message={msg.clone()} />
+                </article>
+            },
+        };
+
         html! {
-            <Layout title="Dashboard" subtitle="Signed in to the offline ops portal.">
+            <Layout title="Dashboard" subtitle="Real-time portal home.">
                 <section class="tx-grid">
+                    { kpi_block }
                     <article class="tx-card">
                         <h2 class="tx-title tx-title--sm">{ "You" }</h2>
                         <div class="tx-kv"><span>{ "Name" }</span><span>{ &state.user.display_name }</span></div>
@@ -271,23 +376,32 @@ pub mod dashboard {
                         </span></div>
                     </article>
                     <article class="tx-card">
-                        <h2 class="tx-title tx-title--sm">{ "Permissions" }</h2>
+                        <h2 class="tx-title tx-title--sm">{ "Quick actions" }</h2>
                         <div class="tx-chip-cloud">
-                            { for state.user.permissions.iter().map(|p| html!{
-                                <span class="tx-chip tx-chip--ghost">{ p.clone() }</span>
-                            }) }
-                        </div>
-                    </article>
-                    <article class="tx-card tx-card--hint">
-                        <h2 class="tx-title tx-title--sm">{ "What's here" }</h2>
-                        <p class="tx-subtle">
-                            { "Use the left nav to reach admin, monitoring, and notifications surfaces. KPI and environmental dashboards land in P-B." }
-                        </p>
-                        if state.has_role(Role::Administrator) {
-                            <Link<Route> to={Route::AdminUsers} classes={classes!("tx-btn", "tx-btn--ghost")}>
-                                { "Manage users" }
+                            if state.has_role(Role::Administrator) {
+                                <Link<Route> to={Route::AdminUsers} classes={classes!("tx-btn", "tx-btn--ghost")}>
+                                    { "Manage users" }
+                                </Link<Route>>
+                            }
+                            if state.has_permission("product.read") {
+                                <Link<Route> to={Route::Products} classes={classes!("tx-btn", "tx-btn--ghost")}>
+                                    { "Open catalog" }
+                                </Link<Route>>
+                            }
+                            if state.has_permission("env.read") || state.has_permission("metric.read") {
+                                <Link<Route> to={Route::MetricDefinitions} classes={classes!("tx-btn", "tx-btn--ghost")}>
+                                    { "Metric definitions" }
+                                </Link<Route>>
+                            }
+                            if state.has_permission("talent.read") {
+                                <Link<Route> to={Route::TalentRecommendations} classes={classes!("tx-btn", "tx-btn--ghost")}>
+                                    { "Talent recommendations" }
+                                </Link<Route>>
+                            }
+                            <Link<Route> to={Route::Notifications} classes={classes!("tx-btn", "tx-btn--ghost")}>
+                                { "Notifications" }
                             </Link<Route>>
-                        }
+                        </div>
                     </article>
                 </section>
             </Layout>
@@ -1360,6 +1474,12 @@ pub mod data_steward {
 
         let sku = use_state(String::new);
         let name = use_state(String::new);
+        // Migration 0012: product master-data extensions surfaced to the
+        // data steward. SPU groups multiple SKUs operationally; barcode is
+        // the scanned GTIN/UPC/EAN; shelf_life_days is the freshness window.
+        let spu = use_state(String::new);
+        let barcode = use_state(String::new);
+        let shelf_life_days = use_state(String::new);
 
         let reload = {
             let auth = auth.clone();
@@ -1392,6 +1512,27 @@ pub mod data_steward {
                 name.set(t.value());
             })
         };
+        let on_spu = {
+            let spu = spu.clone();
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                spu.set(t.value());
+            })
+        };
+        let on_barcode = {
+            let barcode = barcode.clone();
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                barcode.set(t.value());
+            })
+        };
+        let on_shelf_life = {
+            let shelf_life_days = shelf_life_days.clone();
+            Callback::from(move |e: InputEvent| {
+                let t: HtmlInputElement = e.target_unchecked_into();
+                shelf_life_days.set(t.value());
+            })
+        };
 
         let can_create = auth
             .state
@@ -1405,10 +1546,25 @@ pub mod data_steward {
             let reload = reload.clone();
             let sku = sku.clone();
             let name = name.clone();
+            let spu = spu.clone();
+            let barcode = barcode.clone();
+            let shelf_life_days = shelf_life_days.clone();
             Callback::from(move |e: SubmitEvent| {
                 e.prevent_default();
+                let trim_opt = |v: &str| {
+                    let t = v.trim();
+                    if t.is_empty() { None } else { Some(t.to_string()) }
+                };
+                let shelf_parsed = (*shelf_life_days)
+                    .trim()
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|n| *n >= 0);
                 let req = CreateProductRequest {
                     sku: (*sku).clone(),
+                    spu: trim_opt(&*spu),
+                    barcode: trim_opt(&*barcode),
+                    shelf_life_days: shelf_parsed,
                     name: (*name).clone(),
                     description: None,
                     category_id: None,
@@ -1425,12 +1581,18 @@ pub mod data_steward {
                 let reload = reload.clone();
                 let sku = sku.clone();
                 let name = name.clone();
+                let spu = spu.clone();
+                let barcode = barcode.clone();
+                let shelf_life_days = shelf_life_days.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     match api.create_product(&req).await {
                         Ok(p) => {
                             toast.success(&format!("Created product {}", p.sku));
                             sku.set(String::new());
                             name.set(String::new());
+                            spu.set(String::new());
+                            barcode.set(String::new());
+                            shelf_life_days.set(String::new());
                             reload.emit(());
                         }
                         Err(e) => toast.error(&e.user_facing()),
@@ -1448,6 +1610,12 @@ pub mod data_steward {
                                value={(*sku).clone()} oninput={on_sku} />
                         <input class="tx-input" placeholder="Name" required=true
                                value={(*name).clone()} oninput={on_name} />
+                        <input class="tx-input" placeholder="SPU (optional)"
+                               value={(*spu).clone()} oninput={on_spu} />
+                        <input class="tx-input" placeholder="Barcode (optional)"
+                               value={(*barcode).clone()} oninput={on_barcode} />
+                        <input class="tx-input" type="number" min="0" placeholder="Shelf life (days)"
+                               value={(*shelf_life_days).clone()} oninput={on_shelf_life} />
                         <button class="tx-btn" type="submit">{ "Create" }</button>
                     </form>
                 </section>
@@ -1464,7 +1632,9 @@ pub mod data_steward {
             },
             LoadState::Loaded(rows) => {
                 let headers = vec![
-                    AttrValue::from("SKU"), AttrValue::from("Name"),
+                    AttrValue::from("SKU"), AttrValue::from("SPU"),
+                    AttrValue::from("Barcode"), AttrValue::from("Shelf (d)"),
+                    AttrValue::from("Name"),
                     AttrValue::from("Category"), AttrValue::from("Brand"),
                     AttrValue::from("Price"), AttrValue::from("On shelf"),
                     AttrValue::from("Updated"),
@@ -1478,6 +1648,9 @@ pub mod data_steward {
                                 <code>{ p.sku.clone() }</code>
                             </Link<Route>>
                         },
+                        html! { { p.spu.clone().unwrap_or_else(|| "—".into()) } },
+                        html! { <span class="tx-mono">{ p.barcode.clone().unwrap_or_else(|| "—".into()) }</span> },
+                        html! { { p.shelf_life_days.map(|n| n.to_string()).unwrap_or_else(|| "—".into()) } },
                         html! { { p.name.clone() } },
                         html! { { p.category_name.clone().unwrap_or_else(|| "—".into()) } },
                         html! { { p.brand_name.clone().unwrap_or_else(|| "—".into()) } },
@@ -1583,6 +1756,12 @@ pub mod data_steward {
                     <h2 class="tx-title tx-title--sm">
                         <code>{ p.sku.clone() }</code>{ " — " }{ p.name.clone() }
                     </h2>
+                    <div class="tx-kv"><span>{ "SPU" }</span>
+                        <span>{ p.spu.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                    <div class="tx-kv"><span>{ "Barcode" }</span>
+                        <span class="tx-mono">{ p.barcode.clone().unwrap_or_else(|| "—".into()) }</span></div>
+                    <div class="tx-kv"><span>{ "Shelf life (days)" }</span>
+                        <span>{ p.shelf_life_days.map(|n| n.to_string()).unwrap_or_else(|| "—".into()) }</span></div>
                     <div class="tx-kv"><span>{ "Description" }</span>
                         <span>{ p.description.clone().unwrap_or_else(|| "—".into()) }</span></div>
                     <div class="tx-kv"><span>{ "Category" }</span>
@@ -2770,6 +2949,9 @@ pub mod recruiter {
                     required_skills: parsed,
                     min_years,
                     site_id: None,
+                    required_major: None,
+                    min_education: None,
+                    required_availability: None,
                     status: None,
                 };
                 let api = auth.api();

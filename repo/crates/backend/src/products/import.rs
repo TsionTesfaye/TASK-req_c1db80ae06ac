@@ -407,19 +407,27 @@ pub async fn commit_import(
     let mut inserted = 0i32;
 
     for row in &rows {
-        let (sku, name, on_shelf, price_cents, currency) =
+        let (sku, spu, barcode, shelf_life_days, name, on_shelf, price_cents, currency) =
             import_validator::to_product_fields(&row.raw);
 
         let product_id: (Uuid,) = sqlx::query_as(
-            "INSERT INTO products (sku, name, on_shelf, price_cents, currency, created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $6)
+            "INSERT INTO products (sku, spu, barcode, shelf_life_days,
+                                   name, on_shelf, price_cents, currency,
+                                   created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
              ON CONFLICT (sku) DO UPDATE SET
+                spu = EXCLUDED.spu,
+                barcode = EXCLUDED.barcode,
+                shelf_life_days = EXCLUDED.shelf_life_days,
                 name = EXCLUDED.name, on_shelf = EXCLUDED.on_shelf,
                 price_cents = EXCLUDED.price_cents, currency = EXCLUDED.currency,
                 updated_by = EXCLUDED.updated_by, updated_at = NOW()
              RETURNING id",
         )
         .bind(&sku)
+        .bind(spu.as_deref())
+        .bind(barcode.as_deref())
+        .bind(shelf_life_days)
         .bind(&name)
         .bind(on_shelf)
         .bind(price_cents)

@@ -16,6 +16,13 @@ pub struct CandidateQuery {
     pub min_years: Option<i32>,
     /// Location substring match (case-insensitive).
     pub location: Option<String>,
+    /// Field of study substring match (migration 0031).
+    pub major: Option<String>,
+    /// Minimum education level: highschool|associate|bachelor|master|phd
+    /// (migration 0031). Compared with an inline ordinal ranking.
+    pub min_education: Option<String>,
+    /// Availability substring match (migration 0031), e.g. "immediate".
+    pub availability: Option<String>,
     /// Page number (1-based, defaults to 1).
     pub page: Option<u32>,
     /// Page size (defaults to 50, max 200).

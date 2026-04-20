@@ -14,6 +14,17 @@ pub struct CandidateListItem {
     pub location: Option<String>,
     pub years_experience: i32,
     pub skills: Vec<String>,
+    /// Migration 0031: field of study (e.g. "Industrial Engineering").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major: Option<String>,
+    /// Migration 0031: highest attained education level
+    /// (e.g. "bachelor", "master", "phd", "associate", "highschool").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub education: Option<String>,
+    /// Migration 0031: start-date / schedule note
+    /// (e.g. "immediate", "2 weeks notice", "part-time").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
     pub completeness_score: i32,
     pub last_active_at: DateTime<Utc>,
 }
@@ -27,6 +38,12 @@ pub struct CandidateDetail {
     pub years_experience: i32,
     pub skills: Vec<String>,
     pub bio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub education: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
     pub completeness_score: i32,
     pub last_active_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -41,6 +58,12 @@ pub struct UpsertCandidateRequest {
     pub years_experience: i32,
     pub skills: Vec<String>,
     pub bio: Option<String>,
+    #[serde(default)]
+    pub major: Option<String>,
+    #[serde(default)]
+    pub education: Option<String>,
+    #[serde(default)]
+    pub availability: Option<String>,
     pub completeness_score: i32,
     pub last_active_at: Option<DateTime<Utc>>,
 }
@@ -55,6 +78,15 @@ pub struct RoleOpenItem {
     pub required_skills: Vec<String>,
     pub min_years: i32,
     pub site_id: Option<Uuid>,
+    /// Migration 0031: required field of study (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_major: Option<String>,
+    /// Migration 0031: minimum education level (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_education: Option<String>,
+    /// Migration 0031: required availability (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_availability: Option<String>,
     pub status: String,
     pub opened_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -67,6 +99,12 @@ pub struct CreateRoleRequest {
     pub required_skills: Vec<String>,
     pub min_years: i32,
     pub site_id: Option<Uuid>,
+    #[serde(default)]
+    pub required_major: Option<String>,
+    #[serde(default)]
+    pub min_education: Option<String>,
+    #[serde(default)]
+    pub required_availability: Option<String>,
     pub status: Option<String>,
 }
 
