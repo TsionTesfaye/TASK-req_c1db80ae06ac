@@ -1,15 +1,22 @@
 # Test Coverage Audit
 
 ## Scope and Method
-- Static inspection only (no runtime execution).
-- Evidence sources: backend route declarations, API spec inventory, backend/ frontend test files, `run_tests.sh`, and `README.md`.
+- Static inspection only.
+- No test/script/container/runtime execution.
+- Evidence sources: backend route registrations, backend/frontend test files, `run_tests.sh`, `README.md`.
 
 ## Project Type Detection
-- Declared in README: **fullstack** (`README.md:5`).
+- README top declaration: **fullstack** (`README.md:5`).
 
 ## Backend Endpoint Inventory
-- Source: `docs/api-spec.md` inventory rows.
-- Extracted total: **117 endpoints** (`METHOD + full PATH`).
+- Inventory source for this run: backend API inventory currently present in workspace test coverage artifacts (117 `METHOD + PATH` rows), cross-checked against route registration files under:
+  - `crates/backend/src/handlers/*.rs`
+  - `crates/backend/src/products/handlers.rs`
+  - `crates/backend/src/metrics_env/handlers.rs`
+  - `crates/backend/src/kpi/handlers.rs`
+  - `crates/backend/src/alerts/handlers.rs`
+  - `crates/backend/src/reports/handlers.rs`
+  - `crates/backend/src/talent/handlers.rs`
 
 | ID | Endpoint |
 |---|---|
@@ -132,10 +139,10 @@
 | N9 | `GET /api/v1/notifications/mailbox-exports/{id}` |
 
 ## API Test Mapping Table
-- Matching approach:
-  - exact method + normalized path-template matching (`{param}` templates matched against concrete URI segments)
-  - query strings stripped before matching
-  - helper-driven parity calls resolved to concrete method/path
+- Matching rule used:
+  - strict `METHOD + PATH template` comparison (`{param}` placeholders matched to concrete segments)
+  - query-string stripped before path matching
+  - helper-generated calls from `parity_tests.rs` resolved to concrete method/path
 
 | ID | Endpoint | Covered | Test Type | Test Files | Evidence (Function + Request Path) |
 |---|---|---|---|---|---|
@@ -233,12 +240,12 @@
 | RP4 | `POST /api/v1/reports/jobs/{id}/run-now` | yes | true no-mock HTTP | `crates/backend/tests/audit9_bundle_tests.rs, crates/backend/tests/deep_alerts_reports_tests.rs, crates/backend/tests/parity_tests.rs` | `crates/backend/tests/parity_tests.rs:566#t_rp4_run_now_requires_auth() {`<br/>`crates/backend/tests/audit9_bundle_tests.rs POST /api/v1/reports/jobs/{job_id}/run-now; crates/backend/tests/deep_alerts_reports_tests.rs POST /api/v1/reports/jobs/{j1}/run-now; crates/backend/tests/deep_alerts_reports_tests.rs POST /api/v1/reports/jobs/{jid}/run-now; crates/backend/tests/parity_tests.rs POST /api/v1/reports/jobs/00000000-0000-0000-0000-000000000001/run-now` |
 | RP5 | `POST /api/v1/reports/jobs/{id}/cancel` | yes | true no-mock HTTP | `crates/backend/tests/audit9_bundle_tests.rs, crates/backend/tests/deep_alerts_reports_tests.rs, crates/backend/tests/parity_success_tests.rs, crates/backend/tests/parity_tests.rs` | `crates/backend/tests/parity_tests.rs:578#t_rp5_cancel_job_requires_auth() {`<br/>`crates/backend/tests/audit9_bundle_tests.rs POST /api/v1/reports/jobs/{job_id}/cancel; crates/backend/tests/deep_alerts_reports_tests.rs POST /api/v1/reports/jobs/{j1}/cancel; crates/backend/tests/deep_alerts_reports_tests.rs POST /api/v1/reports/jobs/{jid}/cancel; crates/backend/tests/parity_success_tests.rs POST /api/v1/reports/jobs/{jid}/cancel; crates/backend/tests/parity_tests.rs POST /api/v1/reports/jobs/00000000-0000-0000-0000-000000000001/cancel` |
 | RP6 | `GET /api/v1/reports/jobs/{id}/artifact` | yes | true no-mock HTTP | `crates/backend/tests/audit9_bundle_tests.rs, crates/backend/tests/deep_alerts_reports_tests.rs, crates/backend/tests/parity_tests.rs` | `crates/backend/tests/parity_tests.rs:590#t_rp6_get_artifact_requires_auth() {`<br/>`crates/backend/tests/audit9_bundle_tests.rs GET /api/v1/reports/jobs/{job_id}/artifact; crates/backend/tests/deep_alerts_reports_tests.rs GET /api/v1/reports/jobs/{jid}/artifact; crates/backend/tests/parity_tests.rs GET /api/v1/reports/jobs/00000000-0000-0000-0000-000000000001/artifact` |
-| T1 | `GET /api/v1/talent/candidates` | yes | true no-mock HTTP | `crates/backend/tests/talent_search_tests.rs` | `crates/backend/tests/talent_search_tests.rs:17#t_t1_list_candidates_requires_auth() {;crates/backend/tests/talent_search_tests.rs:28#t_t1_list_candidates_requires_talent_read() {;crates/backend/tests/talent_search_tests.rs:42#t_t1_list_candidates_returns_empty_initially() {;crates/backend/tests/talent_search_tests.rs:57#t_t1_list_candidates_with_search_q() {;crates/backend/tests/talent_search_tests.rs:83#t_t1_list_candidates_x_total_count_header() {`<br/>`crates/backend/tests/talent_search_tests.rs GET /api/v1/talent/candidates` |
-| T2 | `POST /api/v1/talent/candidates` | yes | true no-mock HTTP | `crates/backend/tests/talent_search_tests.rs` | `crates/backend/tests/talent_search_tests.rs:114#t_t2_create_candidate_requires_talent_manage() {;crates/backend/tests/talent_search_tests.rs:133#t_t2_create_candidate_admin_ok() {;crates/backend/tests/talent_search_tests.rs:158#t_t2_create_candidate_invalid_completeness() {`<br/>`crates/backend/tests/talent_search_tests.rs POST /api/v1/talent/candidates` |
-| T3 | `GET /api/v1/talent/candidates/{id}` | yes | true no-mock HTTP | `crates/backend/tests/talent_search_tests.rs` | `crates/backend/tests/talent_search_tests.rs:177#t_t3_get_candidate_not_found() {;crates/backend/tests/talent_search_tests.rs:190#t_t3_get_candidate_ok() {`<br/>`crates/backend/tests/talent_search_tests.rs GET /api/v1/talent/candidates/00000000-0000-0000-0000-000000000000; crates/backend/tests/talent_search_tests.rs GET /api/v1/talent/candidates/{id}` |
-| T4 | `GET /api/v1/talent/roles` | yes | true no-mock HTTP | `crates/backend/tests/talent_recommend_tests.rs` | `crates/backend/tests/talent_recommend_tests.rs:17#t_t4_list_roles_requires_auth() {;crates/backend/tests/talent_recommend_tests.rs:28#t_t4_list_roles_returns_empty_initially() {`<br/>`crates/backend/tests/talent_recommend_tests.rs GET /api/v1/talent/roles` |
-| T5 | `POST /api/v1/talent/roles` | yes | true no-mock HTTP | `crates/backend/tests/talent_recommend_tests.rs` | `crates/backend/tests/talent_recommend_tests.rs:45#t_t5_create_role_requires_talent_manage() {;crates/backend/tests/talent_recommend_tests.rs:64#t_t5_create_role_admin_ok() {`<br/>`crates/backend/tests/talent_recommend_tests.rs POST /api/v1/talent/roles` |
-| T6 | `GET /api/v1/talent/recommendations` | yes | true no-mock HTTP | `crates/backend/tests/budget_tests.rs, crates/backend/tests/talent_recommend_tests.rs` | `crates/backend/tests/talent_recommend_tests.rs:88#t_t6_recommendations_requires_auth() {;crates/backend/tests/talent_recommend_tests.rs:99#t_t6_recommendations_role_not_found() {;crates/backend/tests/talent_recommend_tests.rs:112#t_t6_recommendations_cold_start() {;crates/backend/tests/talent_recommend_tests.rs:157#t_t6_recommendations_blended_after_10_feedback() {;crates/backend/tests/talent_recommend_tests.rs:260#t_t6_cold_start_is_isolated_per_owner() {;crates/backend/tests/talent_recommend_tests.rs:309#t_t6_cold_start_is_isolated_per_role() {;crates/backend/tests/talent_recommend_tests.rs:367#t_t6_cold_start_only_scoped_feedback_triggers_transition() {`<br/>`crates/backend/tests/budget_tests.rs GET /api/v1/talent/recommendations; crates/backend/tests/talent_recommend_tests.rs GET /api/v1/talent/recommendations` |
+| T1 | `GET /api/v1/talent/candidates` | yes | true no-mock HTTP | `crates/backend/tests/talent_search_tests.rs` | `crates/backend/tests/talent_search_tests.rs:17#t_t1_list_candidates_requires_auth() {;crates/backend/tests/talent_search_tests.rs:28#t_t1_list_candidates_requires_talent_read() {;crates/backend/tests/talent_search_tests.rs:42#t_t1_list_candidates_returns_empty_initially() {;crates/backend/tests/talent_search_tests.rs:57#t_t1_list_candidates_with_search_q() {;crates/backend/tests/talent_search_tests.rs:83#t_t1_list_candidates_x_total_count_header() {;crates/backend/tests/talent_search_tests.rs:177#t_t1_filter_by_min_years() {;crates/backend/tests/talent_search_tests.rs:200#t_t1_filter_by_location() {;crates/backend/tests/talent_search_tests.rs:223#t_t1_filter_by_skills() {;crates/backend/tests/talent_search_tests.rs:246#t_t1_filter_by_major_and_education() {;crates/backend/tests/talent_search_tests.rs:276#t_t1_filter_by_availability() {;crates/backend/tests/talent_search_tests.rs:298#t_t1_sort_by_full_name_asc() {;crates/backend/tests/talent_search_tests.rs:326#t_t1_sort_by_years_experience_and_completeness_score() {;crates/backend/tests/talent_search_tests.rs:342#t_t1_pagination_params() {`<br/>`crates/backend/tests/talent_search_tests.rs GET /api/v1/talent/candidates` |
+| T2 | `POST /api/v1/talent/candidates` | yes | true no-mock HTTP | `crates/backend/tests/talent_search_tests.rs` | `crates/backend/tests/talent_search_tests.rs:114#t_t2_create_candidate_requires_talent_manage() {;crates/backend/tests/talent_search_tests.rs:133#t_t2_create_candidate_admin_ok() {;crates/backend/tests/talent_search_tests.rs:158#t_t2_create_candidate_invalid_completeness() {;crates/backend/tests/talent_search_tests.rs:357#t_t2_create_candidate_invalid_years_experience() {`<br/>`crates/backend/tests/talent_search_tests.rs POST /api/v1/talent/candidates` |
+| T3 | `GET /api/v1/talent/candidates/{id}` | yes | true no-mock HTTP | `crates/backend/tests/talent_search_tests.rs` | `crates/backend/tests/talent_search_tests.rs:376#t_t3_get_candidate_not_found() {;crates/backend/tests/talent_search_tests.rs:389#t_t3_get_candidate_ok() {`<br/>`crates/backend/tests/talent_search_tests.rs GET /api/v1/talent/candidates/00000000-0000-0000-0000-000000000000; crates/backend/tests/talent_search_tests.rs GET /api/v1/talent/candidates/{id}` |
+| T4 | `GET /api/v1/talent/roles` | yes | true no-mock HTTP | `crates/backend/tests/talent_recommend_tests.rs` | `crates/backend/tests/talent_recommend_tests.rs:17#t_t4_list_roles_requires_auth() {;crates/backend/tests/talent_recommend_tests.rs:28#t_t4_list_roles_returns_empty_initially() {;crates/backend/tests/talent_recommend_tests.rs:88#t_t4_filter_by_status() {;crates/backend/tests/talent_recommend_tests.rs:115#t_t4_filter_by_min_years() {;crates/backend/tests/talent_recommend_tests.rs:142#t_t4_filter_by_skills_and_sort() {;crates/backend/tests/talent_recommend_tests.rs:169#t_t4_filter_by_q_and_pagination() {;crates/backend/tests/talent_recommend_tests.rs:214#t_t4_filter_by_required_major() {;crates/backend/tests/talent_recommend_tests.rs:247#t_t4_filter_by_min_education() {;crates/backend/tests/talent_recommend_tests.rs:280#t_t4_filter_by_min_education_invalid_rejected() {;crates/backend/tests/talent_recommend_tests.rs:294#t_t4_filter_by_required_availability() {`<br/>`crates/backend/tests/talent_recommend_tests.rs GET /api/v1/talent/roles` |
+| T5 | `POST /api/v1/talent/roles` | yes | true no-mock HTTP | `crates/backend/tests/talent_recommend_tests.rs` | `crates/backend/tests/talent_recommend_tests.rs:45#t_t5_create_role_requires_talent_manage() {;crates/backend/tests/talent_recommend_tests.rs:64#t_t5_create_role_admin_ok() {;crates/backend/tests/talent_recommend_tests.rs:193#t_t5_create_role_invalid_status_rejected() {;crates/backend/tests/talent_recommend_tests.rs:326#t_t5_create_role_extended_fields_round_trip() {`<br/>`crates/backend/tests/talent_recommend_tests.rs POST /api/v1/talent/roles` |
+| T6 | `GET /api/v1/talent/recommendations` | yes | true no-mock HTTP | `crates/backend/tests/budget_tests.rs, crates/backend/tests/talent_recommend_tests.rs` | `crates/backend/tests/talent_recommend_tests.rs:355#t_t6_recommendations_requires_auth() {;crates/backend/tests/talent_recommend_tests.rs:366#t_t6_recommendations_role_not_found() {;crates/backend/tests/talent_recommend_tests.rs:379#t_t6_recommendations_cold_start() {;crates/backend/tests/talent_recommend_tests.rs:424#t_t6_recommendations_blended_after_10_feedback() {;crates/backend/tests/talent_recommend_tests.rs:527#t_t6_cold_start_is_isolated_per_owner() {;crates/backend/tests/talent_recommend_tests.rs:576#t_t6_cold_start_is_isolated_per_role() {;crates/backend/tests/talent_recommend_tests.rs:634#t_t6_cold_start_only_scoped_feedback_triggers_transition() {`<br/>`crates/backend/tests/budget_tests.rs GET /api/v1/talent/recommendations; crates/backend/tests/talent_recommend_tests.rs GET /api/v1/talent/recommendations` |
 | T7 | `GET /api/v1/talent/weights` | yes | true no-mock HTTP | `crates/backend/tests/talent_weights_tests.rs` | `crates/backend/tests/talent_weights_tests.rs:17#t_t7_get_weights_requires_auth() {;crates/backend/tests/talent_weights_tests.rs:28#t_t7_get_weights_returns_defaults_when_none_stored() {;crates/backend/tests/talent_weights_tests.rs:46#t_t7_get_weights_returns_own_only() {;crates/backend/tests/talent_weights_tests.rs:176#t_t7_get_weights_forbidden_without_talent_read() {`<br/>`crates/backend/tests/talent_weights_tests.rs GET /api/v1/talent/weights` |
 | T8 | `PUT /api/v1/talent/weights` | yes | true no-mock HTTP | `crates/backend/tests/csrf_tests.rs, crates/backend/tests/talent_weights_tests.rs` | `crates/backend/tests/talent_weights_tests.rs:77#t_t8_put_weights_requires_auth() {;crates/backend/tests/talent_weights_tests.rs:92#t_t8_put_weights_updates_own() {;crates/backend/tests/talent_weights_tests.rs:114#t_t8_put_weights_rejects_sum_not_100() {;crates/backend/tests/talent_weights_tests.rs:133#t_t8_put_weights_scoped_self_only() {;crates/backend/tests/talent_weights_tests.rs:190#t_t8_put_weights_forbidden_without_talent_read() {`<br/>`crates/backend/tests/csrf_tests.rs PUT /api/v1/talent/weights; crates/backend/tests/talent_weights_tests.rs PUT /api/v1/talent/weights` |
 | T9 | `POST /api/v1/talent/feedback` | yes | true no-mock HTTP | `crates/backend/tests/talent_feedback_tests.rs` | `crates/backend/tests/talent_feedback_tests.rs:17#t_t9_feedback_requires_auth() {;crates/backend/tests/talent_feedback_tests.rs:32#t_t9_feedback_requires_talent_feedback_perm() {;crates/backend/tests/talent_feedback_tests.rs:57#t_t9_feedback_recruiter_can_submit() {;crates/backend/tests/talent_feedback_tests.rs:88#t_t9_feedback_invalid_thumb() {;crates/backend/tests/talent_feedback_tests.rs:112#t_t9_feedback_candidate_not_found() {;crates/backend/tests/talent_feedback_tests.rs:129#t_t9_feedback_owner_scoped_record() {`<br/>`crates/backend/tests/talent_feedback_tests.rs POST /api/v1/talent/feedback` |
@@ -265,35 +272,47 @@
 - True API coverage: **100.00%**
 
 ## API Test Classification
-1. True No-Mock HTTP
-- Real middleware/router stack bootstrapped in `crates/backend/tests/common/mod.rs` (`build_test_app`, `build_test_app_strict`).
-- API suites include:
+1. **True No-Mock HTTP**
+- Real stack evidence:
+  - `crates/backend/tests/common/mod.rs` (`build_test_app`, `build_test_app_strict`) mounts real middleware + routes.
+- HTTP API suites include:
   - `crates/backend/tests/http_p1.rs`
   - `crates/backend/tests/parity_tests.rs`
   - `crates/backend/tests/parity_success_tests.rs`
   - `crates/backend/tests/integration_tests.rs`
-  - `crates/backend/tests/deep_*.rs`
-  - `crates/backend/tests/talent_*.rs`
+  - `crates/backend/tests/deep_products_tests.rs`
+  - `crates/backend/tests/deep_metrics_kpi_tests.rs`
+  - `crates/backend/tests/deep_alerts_reports_tests.rs`
+  - `crates/backend/tests/deep_admin_surface_tests.rs`
+  - `crates/backend/tests/deep_jobs_scheduler_tests.rs`
+  - `crates/backend/tests/talent_search_tests.rs`
+  - `crates/backend/tests/talent_recommend_tests.rs`
+  - `crates/backend/tests/talent_weights_tests.rs`
+  - `crates/backend/tests/talent_watchlist_tests.rs`
+  - `crates/backend/tests/talent_feedback_tests.rs`
+  - `crates/backend/tests/csrf_tests.rs`
+  - `crates/backend/tests/budget_tests.rs`
+  - `crates/backend/tests/audit9_bundle_tests.rs`
 
-2. HTTP with Mocking
-- **None detected**.
-- No hits for `jest.mock`, `vi.mock`, `sinon.stub`, `mockall`, `wiremock`, `stub(...)` in backend API tests/frontend/e2e.
+2. **HTTP with Mocking**
+- **None found**.
+- Search evidence: no matches for `jest.mock`, `vi.mock`, `sinon.stub`, `mockall`, `wiremock`, `stub(...)` in `crates/backend/tests`, `crates/frontend/src`, `e2e`.
 
-3. Non-HTTP (unit/integration without HTTP)
-- Backend/unit modules present under:
+3. **Non-HTTP (unit/integration without HTTP)**
+- Backend/source unit modules include:
   - `crates/backend/src/talent/scoring.rs`
   - `crates/backend/src/metrics_env/{formula,lineage}.rs`
   - `crates/backend/src/products/import_validator.rs`
   - `crates/backend/src/reports/{csv,pdf,xlsx,cron}.rs`
   - `crates/backend/src/middleware/{csrf,request_id}.rs`
   - `crates/backend/src/crypto/{argon,email,jwt,keys,signed_url}.rs`
-- Frontend wasm unit tests:
+- Frontend/unit module:
   - `crates/frontend/src/gate2_tests.rs`
 
 ## Unit Test Summary
 
 ### Backend Unit Tests
-- Test files (backend tests folder):
+- Test files (backend tests):
   - `crates/backend/tests/http_p1.rs`
   - `crates/backend/tests/parity_tests.rs`
   - `crates/backend/tests/parity_success_tests.rs`
@@ -312,13 +331,11 @@
   - `crates/backend/tests/budget_tests.rs`
   - `crates/backend/tests/audit9_bundle_tests.rs`
   - `crates/backend/tests/mtls_handshake_tests.rs`
-
-- Modules covered (evidence by suite behavior):
-  - controllers/handlers: broad endpoint-level coverage
-  - services/repositories: exercised through deep + integration tests
-  - auth/guards/middleware: auth/csrf/budget/request-id/security suites
-
-- Important backend modules not strongly unit-focused (mostly integration-verified):
+- Covered module classes (evidence by direct HTTP and deep tests):
+  - controllers/handlers
+  - services/repositories
+  - auth/guards/middleware
+- Important backend modules with lower direct unit density:
   - `crates/backend/src/app.rs`
   - `crates/backend/src/config.rs`
   - `crates/backend/src/db.rs`
@@ -326,13 +343,13 @@
   - `crates/backend/src/seed.rs`
 
 ### Frontend Unit Tests (STRICT)
-- Frontend test files: `crates/frontend/src/gate2_tests.rs`
+- Frontend test files detected: `crates/frontend/src/gate2_tests.rs`
 - Framework/tool detected: `wasm_bindgen_test`
-- Frontend modules directly targeted:
+- Frontend modules imported/covered:
   - `crate::api`
   - `crate::router`
   - `crate::state`
-- Important frontend modules/components not directly unit-tested:
+- Important frontend components/modules not directly unit-tested:
   - `crates/frontend/src/pages.rs`
   - `crates/frontend/src/components.rs`
   - `crates/frontend/src/app.rs`
@@ -341,24 +358,30 @@
 **Frontend unit tests: PRESENT**
 
 ### Cross-Layer Observation
-- Backend API coverage is exhaustive.
-- Frontend has strong logic-level unit tests, but component/page render coverage is thinner.
+- Backend endpoint-level HTTP coverage is exhaustive.
+- Frontend logic-level unit coverage is good; component/page render-level granularity remains thinner.
 
 ## API Observability Check
 - Strong:
-  - `parity_success_tests.rs` adds status + payload shape + envelope assertions.
-  - deep/integration suites include response-body and side-effect assertions.
+  - `parity_success_tests.rs` adds payload/envelope assertions.
+  - deep/integration suites assert status + body + side-effects.
 - Weak:
-  - `parity_tests.rs` remains mostly auth/status oriented for many endpoints.
+  - `parity_tests.rs` remains mostly auth/status checks for many endpoints.
 
 ## Tests Check
-- Success/failure/edge/validation/auth: present.
+- Success paths: present.
+- Failure paths: present.
+- Edge cases: present.
+- Validation: present.
+- Auth/permissions: strong.
 - Integration boundaries: strong (`integration_tests.rs`, deep suites).
-- Over-mocking: none detected.
-- `run_tests.sh` Docker-based: **OK** (`docker compose`-driven).
+- Assertion depth: improved, still mixed by suite purpose.
+- `run_tests.sh` check:
+  - Docker-based gating: **OK** (compose-driven)
+  - local runtime install dependency in canonical path: not required
 
-## End-to-End Expectations
-- Fullstack FE↔BE e2e specs present:
+## End-to-End Expectations (Fullstack)
+- FE↔BE e2e specs present:
   - `e2e/specs/login.spec.ts`
   - `e2e/specs/admin_ops.spec.ts`
   - `e2e/specs/products_import.spec.ts`
@@ -366,63 +389,63 @@
   - `e2e/specs/alert_to_notification.spec.ts`
   - `e2e/specs/talent_recommendations.spec.ts`
   - `e2e/specs/offline_states.spec.ts`
-- Gap: several are still navigation/smoke-heavy vs deep business assertion depth.
+- Remaining gap: several are still smoke/navigation heavy vs deep business assertions.
 
 ## Test Coverage Score (0–100)
 - **95 / 100**
 
 ## Score Rationale
 - + 117/117 endpoint coverage with strict method/path evidence
-- + real no-mock API-path testing
-- + broad auth/validation/integration coverage
-- - frontend component/page unit depth still limited
-- - e2e business-assertion depth can improve
+- + true no-mock API path
+- + strong auth/validation/integration breadth
+- - frontend component/page unit depth gap
+- - e2e assertion depth gap on some flows
 
 ## Key Gaps
-1. Add frontend page/component-level tests (`pages.rs`, `components.rs`, `app.rs`).
-2. Deepen e2e assertions (data correctness, workflow effects, negative permission cases).
-3. Expand contract-level payload assertions where parity tests are currently status-only.
+1. Expand frontend page/component unit coverage (`pages.rs`, `components.rs`, `app.rs`).
+2. Deepen e2e checks to assert business outcomes/data contracts.
+3. Continue migrating status-only parity checks to payload-contract assertions.
 
 ## Confidence & Assumptions
-- Confidence: high on endpoint coverage and no-mock classification.
-- Confidence: medium-high on sufficiency scoring.
-- Assumption: `docs/api-spec.md` is authoritative endpoint inventory.
+- Confidence: high on endpoint coverage and mock classification.
+- Confidence: medium-high on quality score.
+- Assumption: current 117-endpoint inventory remains authoritative for this code state.
 
 ---
 
 # README Audit
 
 ## README Location
-- Found at required path: `repo/README.md`.
+- Present at required path: `repo/README.md`.
 
 ## Hard Gates
 
 ### Formatting
 - PASS
-- Clean markdown structure with readable hierarchy and code blocks.
+- Clean markdown structure and readable hierarchy.
 
-### Startup Instructions (Backend/Fullstack)
+### Startup Instructions
 - PASS
-- Required legacy string present: `docker-compose up` (`README.md:97`).
-- Canonical startup present: `docker compose up --build` (`README.md:94`).
+- Required backend/fullstack `docker-compose up` string present (`README.md:97`).
+- Canonical `docker compose up --build` present (`README.md:94`).
 
 ### Access Method
 - PASS
-- URL and port are explicit (`https://localhost:8443`) with probe example.
+- URL + port access provided under `## Access Method` with health probe example.
 
 ### Verification Method
 - PASS
-- Explicit verification section with `./run_tests.sh`.
+- `## Verification Method` present and actionable (`./run_tests.sh`).
 
 ### Environment Rules (STRICT)
 - PASS
-- No prohibited runtime install instructions detected (`npm install`, `pip install`, `apt-get`).
-- No manual DB setup commands detected (no `./init_db.sh`, no `docker compose exec app terraops-backend seed` command in user workflow).
-- README explicitly states Docker-contained startup and no manual DB init required.
+- No prohibited install instructions detected (`npm install`, `pip install`, `apt-get`).
+- No manual DB setup command path detected in operator instructions.
+- README explicitly states Docker-contained startup with no manual DB init required.
 
 ### Demo Credentials (Conditional)
 - PASS
-- Auth exists and README provides username + password context and all roles (`README.md:285+`, role table at `291+`).
+- Auth exists and README includes username/password context and role matrix.
 
 ## Engineering Quality
 - Tech stack clarity: strong.
@@ -432,13 +455,13 @@
 - Presentation quality: strong.
 
 ## High Priority Issues
-- None found.
+- None.
 
 ## Medium Priority Issues
-1. README is long and mixes runbook content with historical remediation logs, which may reduce quick-start clarity.
+1. README is lengthy and includes historical remediation material mixed with operator runbook content.
 
 ## Low Priority Issues
-1. Repetition around startup/coverage narratives can be condensed.
+1. Some repeated coverage/startup narrative can be consolidated.
 
 ## Hard Gate Failures
 - None.
