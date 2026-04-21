@@ -448,4 +448,51 @@ mod tests {
         let result_b = comfort_index(&temp_b, &humidity, 3600, ts(300)).unwrap();
         assert!((result_a - result_b).abs() < 1e-9);
     }
+
+    // -----------------------------------------------------------------------
+    // sku_on_shelf_compliance
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sku_empty_window_returns_none() {
+        assert_eq!(sku_on_shelf_compliance(&[], 3600, ts(0)), None);
+    }
+
+    #[test]
+    fn sku_all_outside_window_returns_none() {
+        // window = 50s, at = 100; cutoff = 50. ts(0) is before cutoff.
+        let pts = vec![(ts(0), 1.0)];
+        assert_eq!(sku_on_shelf_compliance(&pts, 50, ts(100)), None);
+    }
+
+    #[test]
+    fn sku_all_on_shelf_returns_100() {
+        let pts = vec![(ts(0), 1.0), (ts(100), 1.0), (ts(200), 1.0)];
+        let result = sku_on_shelf_compliance(&pts, 3600, ts(300));
+        assert_eq!(result, Some(100.0));
+    }
+
+    #[test]
+    fn sku_all_off_shelf_returns_0() {
+        let pts = vec![(ts(0), 0.0), (ts(100), 0.0)];
+        let result = sku_on_shelf_compliance(&pts, 3600, ts(300));
+        assert_eq!(result, Some(0.0));
+    }
+
+    #[test]
+    fn sku_mixed_returns_correct_percentage() {
+        // 3 on-shelf, 1 off-shelf → 75%
+        let pts = vec![(ts(0), 1.0), (ts(100), 0.0), (ts(200), 1.0), (ts(300), 1.0)];
+        let result = sku_on_shelf_compliance(&pts, 3600, ts(400));
+        assert!((result.unwrap() - 75.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sku_positive_fractional_counts_as_on_shelf() {
+        // Non-binary inputs: any strictly-positive value is on-shelf.
+        // 2 out of 3 > 0 → 66.67%
+        let pts = vec![(ts(0), 0.5), (ts(100), 2.0), (ts(200), 0.0)];
+        let result = sku_on_shelf_compliance(&pts, 3600, ts(300));
+        assert!((result.unwrap() - (2.0 / 3.0 * 100.0)).abs() < 1e-9);
+    }
 }

@@ -208,6 +208,147 @@ async fn t_t5_create_role_invalid_status_rejected() {
     assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+// ── T4 extended: required_major / min_education / required_availability ──────
+
+#[actix_web::test]
+async fn t_t4_filter_by_required_major() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4major@example.com", &[Role::Recruiter]).await;
+    // Seed a role with required_major set and one without.
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, required_major) \
+         VALUES ('CS Role', '{python}', 2, 'open', 'Computer Science')",
+    )
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status) \
+         VALUES ('No Major Role', '{go}', 1, 'open')",
+    )
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?required_major=computer")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    let arr = body.as_array().unwrap();
+    // Only the CS Role matches the required_major=computer ILIKE filter.
+    assert_eq!(arr.len(), 1, "expected 1 role matching required_major=computer");
+    assert_eq!(arr[0]["title"], "CS Role");
+}
+
+#[actix_web::test]
+async fn t_t4_filter_by_min_education() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4minedu@example.com", &[Role::Recruiter]).await;
+    // Seed roles at different education levels.
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, min_education) \
+         VALUES ('Bachelor Role', '{java}', 2, 'open', 'bachelor')",
+    )
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, min_education) \
+         VALUES ('HS Role', '{html}', 0, 'open', 'highschool')",
+    )
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    // Requesting min_education=bachelor should return only Bachelor Role (rank≥3).
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?min_education=bachelor")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "only bachelor+ roles should pass min_education=bachelor");
+    assert_eq!(arr[0]["title"], "Bachelor Role");
+}
+
+#[actix_web::test]
+async fn t_t4_filter_by_min_education_invalid_rejected() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4minedu2@example.com", &[Role::Recruiter]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?min_education=doctorate")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    // "doctorate" is not in the whitelist → 422 Unprocessable Entity.
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[actix_web::test]
+async fn t_t4_filter_by_required_availability() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) =
+        authed(&ctx.pool, &ctx.keys, "t4avail@example.com", &[Role::Recruiter]).await;
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, required_availability) \
+         VALUES ('Immediate Role', '{rust}', 1, 'open', 'immediate')",
+    )
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status) \
+         VALUES ('No Avail Role', '{rust}', 1, 'open')",
+    )
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?required_availability=immediate")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "only 'immediate' availability role should match");
+    assert_eq!(arr[0]["title"], "Immediate Role");
+}
+
+#[actix_web::test]
+async fn t_t5_create_role_extended_fields_round_trip() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) =
+        authed(&ctx.pool, &ctx.keys, "t5ext@example.com", &[Role::Administrator]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::post()
+        .uri("/api/v1/talent/roles")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .set_json(json!({
+            "title": "Extended Role",
+            "required_skills": ["python"],
+            "min_years": 2,
+            "required_major": "Computer Science",
+            "min_education": "bachelor",
+            "required_availability": "flexible"
+        }))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let body: Value = test::read_body_json(res).await;
+    assert_eq!(body["title"], "Extended Role");
+    assert_eq!(body["required_major"], "Computer Science");
+    assert_eq!(body["min_education"], "bachelor");
+    assert_eq!(body["required_availability"], "flexible");
+}
+
 // ── T6: GET /api/v1/talent/recommendations ───────────────────────────────────
 
 #[actix_web::test]

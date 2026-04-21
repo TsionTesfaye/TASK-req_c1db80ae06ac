@@ -333,6 +333,38 @@ fn sanitize_header(v: &str) -> String {
     v.replace(['\r', '\n'], " ")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_header_replaces_lf() {
+        assert_eq!(sanitize_header("hello\nworld"), "hello world");
+    }
+
+    #[test]
+    fn sanitize_header_replaces_cr() {
+        assert_eq!(sanitize_header("hello\rworld"), "hello world");
+    }
+
+    #[test]
+    fn sanitize_header_replaces_crlf_sequence() {
+        // \r\n is two chars; each becomes a space → two spaces.
+        assert_eq!(sanitize_header("line1\r\nline2"), "line1  line2");
+    }
+
+    #[test]
+    fn sanitize_header_passthrough_normal() {
+        let s = "Normal Subject: Testing 123";
+        assert_eq!(sanitize_header(s), s);
+    }
+
+    #[test]
+    fn sanitize_header_empty_string() {
+        assert_eq!(sanitize_header(""), "");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GET /notifications/mailbox-exports/{id}
 // ---------------------------------------------------------------------------

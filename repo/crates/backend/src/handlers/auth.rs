@@ -258,3 +258,54 @@ async fn change_password(
     let _ = Utc::now;
     Ok(HttpResponse::NoContent().finish())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::extractors::AuthContext;
+    use terraops_shared::roles::Role;
+    use uuid::Uuid;
+
+    fn make_ctx() -> AuthContext {
+        AuthContext {
+            user_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            roles: vec![Role::Analyst],
+            permissions: vec!["metrics.read".to_string()],
+            display_name: "Test User".to_string(),
+            email_mask: "t***@example.com".to_string(),
+            timezone: Some("UTC".to_string()),
+        }
+    }
+
+    #[test]
+    fn auth_user_dto_from_maps_all_fields() {
+        let ctx = make_ctx();
+        let dto = auth_user_dto_from(&ctx);
+        assert_eq!(dto.id, ctx.user_id);
+        assert_eq!(dto.display_name, "Test User");
+        assert_eq!(dto.email_mask, "t***@example.com");
+        // email must remain None — plaintext is not surfaced.
+        assert!(dto.email.is_none());
+        assert_eq!(dto.roles, ctx.roles);
+        assert_eq!(dto.permissions, ctx.permissions);
+        assert_eq!(dto.timezone, ctx.timezone);
+    }
+
+    #[test]
+    fn auth_user_dto_from_no_timezone() {
+        let mut ctx = make_ctx();
+        ctx.timezone = None;
+        let dto = auth_user_dto_from(&ctx);
+        assert!(dto.timezone.is_none());
+    }
+
+    #[test]
+    fn build_refresh_cookie_name_value_and_flags() {
+        let cookie = build_refresh_cookie("tok_abc".to_string(), 3600);
+        assert_eq!(cookie.name(), REFRESH_COOKIE);
+        assert_eq!(cookie.value(), "tok_abc");
+        assert_eq!(cookie.http_only(), Some(true));
+        assert_eq!(cookie.secure(), Some(true));
+    }
+}
