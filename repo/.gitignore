@@ -15,8 +15,10 @@ e2e/node_modules/
 e2e/playwright-report/
 e2e/test-results/
 
-# Coverage
+# Coverage / llvm-cov intermediates
 coverage/
+*.profraw
+*.profdata
 
 # Runtime (must never be committed)
 .env
@@ -24,10 +26,21 @@ coverage/
 *.key
 *.pem
 *.p12
+*.p8
+*.pfx
+*.crt
+*.csr
 terraops-runtime/
+
+# Logs
+*.log
+logs/
 
 # OS / editor
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
