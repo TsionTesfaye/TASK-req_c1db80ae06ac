@@ -86,14 +86,25 @@ ENV CARGO_TERM_COLOR=never \
 # Install trunk and wasm-bindgen-cli from pre-built binaries.
 # Trunk.toml pins wasm_bindgen = "0.2.118" and we provide the matching binary
 # on PATH so trunk uses it directly without re-downloading.
+#
+# trunk: download to a temp file so we capture the curl exit code independently
+# of tar.  If the pre-built binary is absent for this architecture (the
+# v0.21.14 release omitted the x86_64 GNU asset; aarch64 was present), fall
+# back to `cargo install --locked trunk` — slower (~10 min) but always works.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && rustup target add wasm32-unknown-unknown \
  && ARCH=$(uname -m) \
- && curl --connect-timeout 30 --max-time 120 -fsSL \
-      "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-${ARCH}-unknown-linux-gnu.tar.gz" \
-    | tar -xz -C /usr/local/bin trunk \
+ && TRUNK_TGZ="/tmp/trunk.tar.gz" \
+ && TRUNK_URL="https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-${ARCH}-unknown-linux-gnu.tar.gz" \
+ && (curl --connect-timeout 30 --max-time 120 -fsSLo "${TRUNK_TGZ}" "${TRUNK_URL}" \
+     && tar -xzf "${TRUNK_TGZ}" -C /usr/local/bin trunk \
+     && rm -f "${TRUNK_TGZ}" \
+     && echo "trunk: pre-built binary installed for ${ARCH}") \
+    || (echo "trunk: pre-built not available for ${ARCH} at v0.21.14 — falling back to cargo install" \
+        && rm -f "${TRUNK_TGZ}" \
+        && cargo install --locked trunk --version 0.21.14) \
  && curl --connect-timeout 30 --max-time 120 -fsSL \
       "https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.118/wasm-bindgen-0.2.118-${ARCH}-unknown-linux-gnu.tar.gz" \
     | tar -xz --strip-components=1 -C /usr/local/bin \
