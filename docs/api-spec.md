@@ -6,9 +6,9 @@ All REST JSON under `/api/v1/`. Served by the same Actix-web binary that serves 
 { "error_code": "…", "message": "…", "request_id": "…", "details"?: … }
 ```
 
-Pagination: `page` (default 1), `page_size` (default 50, max 200). Response: `{items, page, page_size, total}` + `X-Total-Count`. Sorting: `sort=field:asc,other:desc`. Timestamps ISO-8601 with offset in payloads; UI formats MM/DD/YYYY hh:mm AM/PM.
+Pagination: `page` (default 1), `page_size` (default 50, max 200). Response: `{items, page, page_size, total}` + `X-Total-Count`. Sorting: `sort_by=field&sort_dir=asc|desc` on list endpoints that expose it (see Contract Rules). Timestamps ISO-8601 with offset in payloads; UI formats MM/DD/YYYY hh:mm AM/PM.
 
-Auth headers: `Authorization: Bearer <access_jwt>` + `X-Requested-With: terraops` for mutations. Refresh token via HttpOnly SameSite=strict cookie `tops_refresh`.
+Auth headers: `Authorization: Bearer <access_jwt>` + `X-Requested-With: terraops` for mutations. The CSRF header is enforced by `middleware::csrf::CsrfMw`: any `POST`/`PUT`/`PATCH`/`DELETE` under `/api/v1/*` that is missing it (or carries a different value) is rejected with `403 FORBIDDEN` (`error_code=AUTH_FORBIDDEN`). `GET`/`HEAD`/`OPTIONS` are not gated. The frontend `ApiClient::mutate` / `mutate_no_body` attach the header on every state-changing request (Audit M1). Refresh token via HttpOnly SameSite=strict cookie `tops_refresh`.
 
 ## Auth Classification (authoritative)
 
@@ -20,11 +20,17 @@ Every endpoint carries **exactly one** classification; see `design.md §Permissi
 - `SELF` — authenticated + object-level owner check.
 - `PERM_OR_SELF(code)` — pass if holds `code` OR owns the object.
 
-Signature or query-parameter requirements (for example, the signed-image GET) are expressed in §Contract Rules and in the row's Notes column — never by compounding the auth class. All signed-request endpoints are classified `AUTH`; the signature is an additional contract check verified inside the handler.
+Signature or query-parameter requirements (for example, the signed-image GET) are expressed in §Contract Rules and in the row's Notes column — never by compounding the auth class. `SIGNED` is its own auth class: the HMAC-bound query string itself is the capability, and no bearer header is required or accepted on that path. The only `SIGNED` endpoint in the inventory is P13 (`GET /api/v1/images/{imgid}`) — browsers cannot attach `Authorization: Bearer` to `<img src="…">` loads, so the URL alone must be the capability (Audit #13 Issue #1, Audit HIGH H3). All other endpoints that use query-parameter signatures remain `AUTH` or a permission class, and the signature is verified as an additional handler-level check on top of the bearer session.
 
-All notification endpoints (N1–N7) are classified `SELF`. There is no `notification.read` permission code. Cross-user notification reads are not authorized via any role — an administrator cannot read another user's notifications through these endpoints.
+All notification endpoints (N1–N9) are classified `SELF`. There is no `notification.read` permission code. Cross-user notification reads are not authorized via any role — an administrator cannot read another user's notifications through these endpoints.
+
+## Login Contract (username-first, audit #10 issue #2)
+
+`POST /api/v1/auth/login` accepts a `username` field only. The backend looks up the account by the `username` column in the `users` table; the previously-permitted email-form fallback has been removed. Attempting to sign in with an email address in the `username` field returns `401 AUTH_INVALID_CREDENTIALS` with no hint that email login is supported. The path `/api/v1/auth/login` and the payload shape `{username, password}` are the single documented sign-in contract for every role (steward, analyst, talent-scorer, admin, SRE, demo) — no alternate `/login-email` or `login_or_email` form exists anywhere in the mounted router.
 
 ## Endpoint Inventory
+
+Every row below corresponds to an actual `.route(...)` entry mounted by `handlers::configure` in `crates/backend/src/handlers/mod.rs` plus its feature-family `configure` fns. Paths are written with the full `/api/v1/...` prefix that the mounted `web::scope("/api/v1")` produces. The `scripts/audit_endpoints.sh` Gate 3 script parses both these rows and the Rust handler sources to enforce method+path parity (audit #10 issue #1).
 
 ### System / Public
 | # | Method | Path | Auth | Notes |
@@ -35,49 +41,53 @@ All notification endpoints (N1–N7) are classified `SELF`. There is no `notific
 ### Auth & Session
 | # | Method | Path | Auth | Notes |
 |---|---|---|---|---|
-| A1 | POST | `/api/v1/auth/login` | PUBLIC | body `{username,password}`; 200 → `{access_token, access_expires_at, user}`; sets `tops_refresh` cookie; lockout after 10/15min |
-| A2 | POST | `/api/v1/auth/refresh` | PUBLIC | rotates refresh and returns a new access token; handler requires a valid `tops_refresh` HttpOnly cookie (see Contract Rules) — the cookie is not an auth-classification concern |
+| A1 | POST | `/api/v1/auth/login` | PUBLIC | body `{username,password}`; 200 → `{access_token, access_expires_at, user}`; sets `tops_refresh` cookie; username-only (no email fallback — audit #10 issue #2); lockout after 10/15min |
+| A2 | POST | `/api/v1/auth/refresh` | PUBLIC | rotates refresh and returns a new access token; handler requires a valid `tops_refresh` HttpOnly cookie (see Contract Rules) |
 | A3 | POST | `/api/v1/auth/logout` | AUTH | revokes current session |
-| A4 | GET | `/api/v1/auth/me` | AUTH | caller profile (with full decrypted email), roles, perm bitset |
+| A4 | GET | `/api/v1/auth/me` | AUTH | caller profile: `email_mask` only (never plaintext `email`), roles, perm bitset — see §Contract Rules "Auth/me email contract" |
 | A5 | POST | `/api/v1/auth/change-password` | SELF | requires current password |
 
 ### Users & Roles (Admin console)
 | # | Method | Path | Auth | Notes |
 |---|---|---|---|---|
-| U1 | GET | `/api/v1/admin/users` | PERM(user.manage) | list; email_mask only |
-| U2 | POST | `/api/v1/admin/users` | PERM(user.manage) | create |
-| U3 | GET | `/api/v1/admin/users/{id}` | PERM(user.manage) | detail; returns full email (admin-only channel) |
-| U4 | PATCH | `/api/v1/admin/users/{id}` | PERM(user.manage) | update status, email, TZ |
-| U5 | DELETE | `/api/v1/admin/users/{id}` | PERM(user.manage) | soft-disable |
-| U6 | POST | `/api/v1/admin/users/{id}/roles` | PERM(role.assign) | body `{role_ids[]}` (replace set) |
-| U7 | POST | `/api/v1/admin/users/{id}/unlock` | PERM(user.manage) | clear lockout |
-| U8 | POST | `/api/v1/admin/users/{id}/reset-password` | PERM(user.manage) | force reset on next login |
-| U9 | GET | `/api/v1/admin/roles` | PERM(user.manage) | list roles + permission map |
-| U10 | GET | `/api/v1/admin/audit-log` | PERM(user.manage) | query audit entries |
+| U1 | GET | `/api/v1/users` | PERM(user.manage) | list; email_mask only |
+| U2 | POST | `/api/v1/users` | PERM(user.manage) | create |
+| U3 | GET | `/api/v1/users/{id}` | PERM(user.manage) | detail; returns full email (admin-only channel) |
+| U4 | PATCH | `/api/v1/users/{id}` | PERM(user.manage) | update status, email, TZ |
+| U5 | DELETE | `/api/v1/users/{id}` | PERM(user.manage) | soft-disable |
+| U6 | POST | `/api/v1/users/{id}/roles` | PERM(role.assign) | body `{role_ids[]}` (replace set) |
+| U7 | POST | `/api/v1/users/{id}/unlock` | PERM(user.manage) | clear lockout |
+| U8 | POST | `/api/v1/users/{id}/reset-password` | PERM(user.manage) | force reset on next login |
+| U9 | GET | `/api/v1/roles` | PERM(user.manage) | list roles + permission map |
+| U10 | GET | `/api/v1/audit` | PERM(user.manage) | query audit entries |
 
 ### Security & Ops (Admin)
 | # | Method | Path | Auth | Notes |
 |---|---|---|---|---|
-| SEC1 | GET | `/api/v1/admin/allowlist` | PERM(allowlist.manage) | list |
-| SEC2 | POST | `/api/v1/admin/allowlist` | PERM(allowlist.manage) | add CIDR |
-| SEC3 | DELETE | `/api/v1/admin/allowlist/{id}` | PERM(allowlist.manage) | remove |
-| SEC4 | GET | `/api/v1/admin/device-certs` | PERM(mtls.manage) | list pin set |
-| SEC5 | POST | `/api/v1/admin/device-certs` | PERM(mtls.manage) | register pre-issued cert (SPKI + label + user assignment) |
-| SEC6 | POST | `/api/v1/admin/device-certs/{id}/revoke` | PERM(mtls.manage) | revoke pin |
-| SEC7 | DELETE | `/api/v1/admin/device-certs/{id}` | PERM(mtls.manage) | delete record |
-| SEC8 | GET | `/api/v1/admin/mtls-config` | PERM(mtls.manage) | read enforcement state |
-| SEC9 | PUT | `/api/v1/admin/mtls-config` | PERM(mtls.manage) | flip `enforced` |
-| R1 | GET | `/api/v1/admin/retention` | PERM(retention.manage) | list policies |
-| R2 | PUT | `/api/v1/admin/retention/{domain}` | PERM(retention.manage) | update TTL |
-| R3 | POST | `/api/v1/admin/retention/{domain}/run` | PERM(retention.manage) | manual enforce |
+| SEC1 | GET | `/api/v1/security/allowlist` | PERM(allowlist.manage) | list |
+| SEC2 | POST | `/api/v1/security/allowlist` | PERM(allowlist.manage) | add CIDR |
+| SEC3 | DELETE | `/api/v1/security/allowlist/{id}` | PERM(allowlist.manage) | remove |
+| SEC4 | GET | `/api/v1/security/device-certs` | PERM(mtls.manage) | list pin set |
+| SEC5 | POST | `/api/v1/security/device-certs` | PERM(mtls.manage) | register pre-issued cert (SPKI + label + user assignment) |
+| SEC6 | DELETE | `/api/v1/security/device-certs/{id}` | PERM(mtls.manage) | revoke + remove pin (single combined delete route) |
+| SEC7 | GET | `/api/v1/security/mtls` | PERM(mtls.manage) | read enforcement state |
+| SEC8 | PATCH | `/api/v1/security/mtls` | PERM(mtls.manage) | flip `enforced` |
+| SEC9 | GET | `/api/v1/security/mtls/status` | PERM(mtls.manage) | live cert+pin counts |
+
+### Retention (Admin)
+| # | Method | Path | Auth | Notes |
+|---|---|---|---|---|
+| R1 | GET | `/api/v1/retention` | PERM(retention.manage) | list policies |
+| R2 | PATCH | `/api/v1/retention/{domain}` | PERM(retention.manage) | update TTL |
+| R3 | POST | `/api/v1/retention/{domain}/run` | PERM(retention.manage) | manual enforce |
 
 ### Monitoring (Admin)
 | # | Method | Path | Auth | Notes |
 |---|---|---|---|---|
 | M1 | GET | `/api/v1/monitoring/latency` | PERM(monitoring.read) | p50/p95/p99 over window |
 | M2 | GET | `/api/v1/monitoring/errors` | PERM(monitoring.read) | error rate by route |
-| M3 | GET | `/api/v1/monitoring/crashes` | PERM(monitoring.read) | list crash reports |
-| M4 | POST | `/api/v1/monitoring/crashes` | AUTH | client-reported crash ingest |
+| M3 | GET | `/api/v1/monitoring/crash-reports` | PERM(monitoring.read) | list crash reports |
+| M4 | POST | `/api/v1/monitoring/crash-report` | AUTH | client-reported crash ingest |
 
 ### Reference Data
 | # | Method | Path | Auth | Notes |
@@ -107,14 +117,14 @@ All notification endpoints (N1–N7) are classified `SELF`. There is no `notific
 | P10 | DELETE | `/api/v1/products/{id}/tax-rates/{rid}` | PERM(product.write) | remove |
 | P11 | POST | `/api/v1/products/{id}/images` | PERM(product.write) | multipart upload |
 | P12 | DELETE | `/api/v1/products/{id}/images/{imgid}` | PERM(product.write) | |
-| P13 | GET | `/api/v1/images/{imgid}` | AUTH | signed-URL retrieval; requires valid `sig` + `exp` query params (see Contract Rules) |
+| P13 | GET | `/api/v1/images/{imgid}` | SIGNED | signed-URL retrieval; the HMAC-bound `?u=<uuid>&exp=<unix>&sig=<hex>` query string itself is the capability (no bearer header — Audit #13 Issue #1). Tampering with `u` or `exp` fails the HMAC → 403. Mint time (product detail etc.) is bearer-gated. |
 | P14 | POST | `/api/v1/products/export` | PERM(product.read) | kind=csv\|xlsx, streams |
 
 ### Product Imports
 | # | Method | Path | Auth | Notes |
 |---|---|---|---|---|
 | I1 | POST | `/api/v1/imports` | PERM(product.import) | multipart CSV/XLSX → uploaded batch |
-| I2 | GET | `/api/v1/imports` | PERM(product.import) | list batches (steward sees all; could add SELF filter) |
+| I2 | GET | `/api/v1/imports` | PERM(product.import) | list batches |
 | I3 | GET | `/api/v1/imports/{id}` | PERM(product.import) | batch + rows summary |
 | I4 | GET | `/api/v1/imports/{id}/rows` | PERM(product.import) | paginated row validation |
 | I5 | POST | `/api/v1/imports/{id}/validate` | PERM(product.import) | validation pass |
@@ -175,7 +185,7 @@ All notification endpoints (N1–N7) are classified `SELF`. There is no `notific
 ### Talent
 | # | Method | Path | Auth | Notes |
 |---|---|---|---|---|
-| T1 | GET | `/api/v1/talent/candidates` | PERM(talent.read) | search + filter + sort |
+| T1 | GET | `/api/v1/talent/candidates` | PERM(talent.read) | search + filter; audit #10 issue #3 — accepts whitelisted `sort_by` / `sort_dir` |
 | T2 | POST | `/api/v1/talent/candidates` | PERM(talent.manage) | create/update |
 | T3 | GET | `/api/v1/talent/candidates/{id}` | PERM(talent.read) | |
 | T4 | GET | `/api/v1/talent/roles` | PERM(talent.read) | open roles |
@@ -186,8 +196,9 @@ All notification endpoints (N1–N7) are classified `SELF`. There is no `notific
 | T9 | POST | `/api/v1/talent/feedback` | PERM(talent.feedback) | owner-scoped record |
 | T10 | GET | `/api/v1/talent/watchlists` | SELF | caller's private watchlists |
 | T11 | POST | `/api/v1/talent/watchlists` | SELF | |
-| T12 | POST | `/api/v1/talent/watchlists/{id}/items` | SELF | |
-| T13 | DELETE | `/api/v1/talent/watchlists/{id}/items/{cid}` | SELF | |
+| T12 | POST | `/api/v1/talent/watchlists/{id}/items` | SELF | add candidate to watchlist |
+| T13 | DELETE | `/api/v1/talent/watchlists/{id}/items/{cid}` | SELF | remove candidate from watchlist |
+| T14 | GET | `/api/v1/talent/watchlists/{id}/items` | SELF | list candidates on watchlist |
 
 ### Notifications
 | # | Method | Path | Auth | Notes |
@@ -195,23 +206,29 @@ All notification endpoints (N1–N7) are classified `SELF`. There is no `notific
 | N1 | GET | `/api/v1/notifications` | SELF | caller's own; `unread=1` filter |
 | N2 | POST | `/api/v1/notifications/{id}/read` | SELF | |
 | N3 | POST | `/api/v1/notifications/read-all` | SELF | |
-| N4 | GET | `/api/v1/notifications/subscriptions` | SELF | |
-| N5 | PUT | `/api/v1/notifications/subscriptions` | SELF | upsert topic toggles |
-| N6 | POST | `/api/v1/notifications/mailbox-export` | SELF | generates local `.mbox` file |
-| N7 | GET | `/api/v1/notifications/mailbox-exports/{id}` | SELF | download artifact |
+| N4 | GET | `/api/v1/notifications/unread-count` | SELF | returns `{unread: N}` |
+| N5 | GET | `/api/v1/notifications/subscriptions` | SELF | |
+| N6 | PUT | `/api/v1/notifications/subscriptions` | SELF | upsert topic toggles |
+| N7 | GET | `/api/v1/notifications/mailbox-exports` | SELF | list prior exports |
+| N8 | POST | `/api/v1/notifications/mailbox-export` | SELF | generate local `.mbox` file |
+| N9 | GET | `/api/v1/notifications/mailbox-exports/{id}` | SELF | download artifact |
 
 ## Totals
 
-**114 HTTP endpoints.** Every row above has a corresponding test row in `docs/test-coverage.md §Endpoint-to-Test Map`.
+**117 HTTP endpoints.** Every row above has a corresponding test row in `docs/test-coverage.md §Endpoint-to-Test Map`.
 
 Breakdown (matches the inventory tables above, all `## Endpoint Inventory` rows):
 
-- System S1–S2 (2) + Auth A1–A5 (5) + Users U1–U10 (10) + Security SEC1–SEC9 (9) + Retention R1–R3 (3) + Monitoring M1–M4 (4) + Reference Data REF1–REF9 (9) + Notifications N1–N7 (7) = **49 P1 endpoints**.
+- System S1–S2 (2) + Auth A1–A5 (5) + Users U1–U10 (10) + Security SEC1–SEC9 (9) + Retention R1–R3 (3) + Monitoring M1–M4 (4) + Reference Data REF1–REF9 (9) + Notifications N1–N9 (9) = **51 P1 endpoints**.
 - Products P1–P14 (14) + Product Imports I1–I7 (7) = **21 P-A endpoints**.
 - Env E1–E6 (6) + Metrics MD1–MD7 (7) + KPI K1–K6 (6) + Alerts AL1–AL6 (6) + Reports RP1–RP6 (6) = **31 P-B endpoints**.
-- Talent T1–T13 (13) = **13 P-C endpoints**.
+- Talent T1–T14 (14) = **14 P-C endpoints**.
 
-49 + 21 + 31 + 13 = **114 total**. The stale `77` figure that previously lived here predated the full P-A / P-B / P-C inventory and is superseded by this line.
+51 + 21 + 31 + 14 = **117 total**. This supersedes the old `114` figure that predated:
+
+- the three new notification endpoints (`unread-count`, list-`mailbox-exports`, download `mailbox-exports/{id}` — now N4/N7/N9);
+- T14 (`GET /talent/watchlists/{id}/items`); and
+- the revised SEC6 mapping (combined DELETE `/security/device-certs/{id}` replaces the previous split revoke/delete pair).
 
 ## Contract Rules
 
@@ -219,10 +236,13 @@ Breakdown (matches the inventory tables above, all `## Endpoint Inventory` rows)
 - List endpoints always wrap items + set `X-Total-Count`.
 - The frontend client retries only idempotent GETs (exactly once, 3 s per attempt).
 - Handler >3 s → `504 TIMEOUT` with `request_id`.
+- **Candidate sort contract (applies to T1, audit #10 issue #3)**: `GET /api/v1/talent/candidates` accepts optional `sort_by` + `sort_dir` query parameters. `sort_by` must be one of `last_active_at`, `created_at`, `updated_at`, `full_name`, `years_experience`, `completeness_score`. `sort_dir` must be `asc` or `desc`. Unknown values return `400 VALIDATION`. The handler validates against the whitelist before passing the value down to `talent::candidates::list`, which only interpolates fixed, hard-coded ORDER BY strings — no untrusted identifier ever enters the SQL text. Defaults: `last_active_at` / `desc`, matching pre-audit behavior.
 - **Refresh contract (applies to A2)**: although classified `PUBLIC`, the `/auth/refresh` handler requires a valid, non-revoked, non-expired `tops_refresh` cookie (HttpOnly, SameSite=strict, set at login). The handler looks up the cookie's hash in `sessions`, rotates the row (old refresh is marked `revoked`, new refresh is issued), and returns a new access token. Missing/invalid/expired/revoked cookie → `401 AUTH_INVALID_CREDENTIALS`. The cookie check is a handler-level concern, not an auth-classification one, so A2 retains a single canonical class.
-- **Signed image URL contract (applies to P13)**: request must include `sig` and `exp` query parameters. `sig = HMAC_SHA256(image_hmac_key, "{path}|{user_id}|{exp}")`. Handler rejects (403) if `exp` is in the past, if `sig` is missing, if `sig` does not match the recomputed HMAC, or if the authenticated caller's user id does not match the one bound in the signature. The `AUTH` classification applies to the route; the signature is an additional handler-level check that lets revoked sessions be refused even if the URL is still within `exp`.
+- **Auth/me email contract (applies to A4, audit #10 issue #4)**: `GET /api/v1/auth/me` returns the `AuthUserDto` with `email: null` and `email_mask: "u***@example.com"`. Plaintext email is never returned on this endpoint — even for administrators. The only channel that exposes plaintext email is the admin-only `GET /api/v1/users/{id}` (U3), which requires `PERM(user.manage)`. A caller that wants to see its own plaintext email must go through the self-detail path, which uses the same U3 endpoint with the caller's own id and still requires admin privilege — there is no self-plaintext shortcut on `/me`. Reverse test: `t_a4_me_returns_identity_for_bearer_holder` asserts `email` is JSON `null` and `email_mask` contains `@`.
+- **Login contract (applies to A1, audit #10 issue #2)**: `username` field is the only credential identifier accepted. The handler calls `services::users::find_by_username` and does not fall back to `find_by_email` — an email in the `username` field is rejected with `401 AUTH_INVALID_CREDENTIALS`. The reverse-test `t_a1_login_rejects_email_as_username` exercises this path against the real HTTP endpoint.
+- **Signed image URL contract (applies to P13, Audit HIGH H3 — canonical Option A, Capability URL)**: request MUST include `u`, `exp`, and `sig` query parameters. `sig = HMAC_SHA256(image_hmac_key, "{path}|{user_id}|{exp}")` where `{user_id}` is the value of the `u=` parameter (canonical hyphenated UUID). The endpoint is classified `SIGNED` and is deliberately NOT bearer-gated — browsers cannot attach `Authorization: Bearer` to `<img src="…">` loads, so the signed URL itself is the capability. The handler rejects (403) if any of `u`, `exp`, or `sig` is missing or malformed, if `exp` is in the past, if `exp` is more than `MAX_TTL_SECONDS (600s)` in the future, or if the recomputed HMAC does not match. Tampering with `u` or `exp` yields a signature mismatch. Mint time remains bearer-gated (only authenticated handlers such as `GET /products/{id}` produce signed URLs), which preserves anti-hotlink and auth-provenance properties without requiring a bearer at read time.
 - mTLS pin rejection happens at TLS handshake; it is not an HTTP response. Admin monitoring surfaces the refused-connection counter separately.
-- `/admin/device-certs` mutations bump an in-memory pin-set generation; the Rustls verifier reloads within 1 s.
+- `/security/device-certs` mutations bump an in-memory pin-set generation; the Rustls verifier reloads within ~30 s.
 
 ## Static / SPA Serving (not under /api/v1)
 
