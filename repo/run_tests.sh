@@ -62,6 +62,19 @@ fi
 
 compose() { docker compose "$@"; }
 
+# ---- Clean slate: remove all locally-built service images and stopped
+#      containers so every gate starts from a completely fresh build.
+#      Base-layer pulls (rust:1.88-bookworm, postgres:16) are still cached
+#      by the Docker daemon registry store — only the project-built layers
+#      are purged.  This ensures no stale compiled artefacts survive between
+#      runs.  `|| true` on each step so a first-run (nothing to remove) does
+#      not abort the script.
+section "Clean slate — removing locally-built images and stopped containers"
+compose down --remove-orphans --volumes 2>/dev/null || true
+compose rm   --force --stop   2>/dev/null || true
+# Remove images built specifically for this compose project (not base images).
+compose images -q 2>/dev/null | xargs docker rmi --force 2>/dev/null || true
+
 failed=0
 
 # ---- Gate 1 : backend + shared cargo tests + line-coverage threshold ------
@@ -95,7 +108,7 @@ GATE1_TESTS=(http_p1 parity_tests parity_success_tests \
              audit9_bundle_tests csrf_tests)
 
 section "Gate 1 — cargo test + cargo llvm-cov (terraops-backend + terraops-shared, --fail-under-lines ${GATE1_LINE_FLOOR} floor)"
-if ! compose build tests; then
+if ! compose build --no-cache tests; then
     echo "[gate1] FAILED — could not build the 'tests' image." >&2
     failed=1
 else
@@ -230,7 +243,12 @@ else
     # entrypoint has completed dev_bootstrap, migrations, and seed — so a
     # passing TCP probe means the service is fully initialised.
     flow_ok=1
-    if ! compose up -d --wait --build app; then
+    # Build app image with --no-cache first, then bring it up.
+    if ! compose build --no-cache app; then
+        echo "[flow] FAILED — could not build the 'app' image." >&2
+        failed=1
+        flow_ok=0
+    elif ! compose up -d --wait app; then
         echo "[flow] FAILED — app service did not become healthy within its healthcheck budget." >&2
         failed=1
         flow_ok=0

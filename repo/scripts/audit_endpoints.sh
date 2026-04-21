@@ -89,7 +89,9 @@ fi
 INVENTORY_AWK='
     BEGIN { in_inv = 0 }
     /^## / {
-        if ($0 ~ /^## Endpoint Inventory[[:space:]]*$/) { in_inv = 1; next }
+        # Use substr() prefix match — avoids [[:space:]]*$ anchor differences
+        # between mawk (Debian) / gawk (Amazon Linux) / BSD awk (macOS).
+        if (substr($0, 1, 22) == "## Endpoint Inventory") { in_inv = 1; next }
         else if (in_inv == 1) { in_inv = 0 }
     }
     in_inv == 1 && /^\|/ {
