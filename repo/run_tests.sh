@@ -136,11 +136,23 @@ else
           --ignore-filename-regex '${GATE1_IGNORE_REGEX}' \\
           --summary-only | tail -5"
 
-    if ! compose run --rm tests bash -c "${gate1a_cmd}"; then
-        echo "[gate1a] FAILED — cargo test reported failures (test-regression gate)." >&2
+    # timeout(1) kills compose run after the budget; the exit-code from timeout
+    # is 124 when the deadline fires, which propagates through `if !` as a
+    # failure — a hanging test is therefore treated the same as a failing test.
+    # Budget: Gate 1a + 1b each get 30 minutes — generous but finite.
+    if ! timeout 1800 compose run --rm tests bash -c "${gate1a_cmd}"; then
+        if [[ $? -eq 124 ]]; then
+            echo "[gate1a] FAILED — test suite exceeded 30-minute deadline (possible hung test)." >&2
+        else
+            echo "[gate1a] FAILED — cargo test reported failures (test-regression gate)." >&2
+        fi
         failed=1
-    elif ! compose run --rm tests bash -c "${gate1b_cmd}"; then
-        echo "[gate1b] FAILED — backend line coverage below ${GATE1_LINE_FLOOR}%% floor." >&2
+    elif ! timeout 1800 compose run --rm tests bash -c "${gate1b_cmd}"; then
+        if [[ $? -eq 124 ]]; then
+            echo "[gate1b] FAILED — coverage run exceeded 30-minute deadline." >&2
+        else
+            echo "[gate1b] FAILED — backend line coverage below ${GATE1_LINE_FLOOR}%% floor." >&2
+        fi
         failed=1
     fi
 fi
@@ -165,7 +177,8 @@ fi
 GATE2_FVM_FLOOR="${GATE2_FVM_FLOOR:-90}"
 
 section "Gate 2a — frontend wasm-bindgen-test suite (Node mode, no Chromium)"
-if ! compose run --rm --no-deps tests bash -c '
+# Budget: 10 minutes — WASM compilation + Node runner; first build is slow.
+if ! timeout 600 compose run --rm --no-deps tests bash -c '
     set -e
     cargo --version
     node --version
@@ -173,7 +186,11 @@ if ! compose run --rm --no-deps tests bash -c '
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
         cargo test --target wasm32-unknown-unknown -p terraops-frontend --no-fail-fast
 '; then
-    echo "[gate2a] FAILED — frontend wasm-bindgen-test suite reported failures." >&2
+    if [[ $? -eq 124 ]]; then
+        echo "[gate2a] FAILED — wasm-bindgen-test exceeded 10-minute deadline." >&2
+    else
+        echo "[gate2a] FAILED — frontend wasm-bindgen-test suite reported failures." >&2
+    fi
     failed=1
 fi
 
