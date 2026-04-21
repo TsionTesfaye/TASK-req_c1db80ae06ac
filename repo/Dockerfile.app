@@ -50,10 +50,14 @@ ENV CARGO_TERM_COLOR=never \
 WORKDIR /workspace
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && rustup target add wasm32-unknown-unknown \
- && cargo install --locked trunk --version 0.21.14 \
+ && ARCH=$(uname -m) \
+ && curl -fsSL \
+      "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-${ARCH}-unknown-linux-gnu.tar.gz" \
+    | tar -xz -C /usr/local/bin trunk \
+ && chmod +x /usr/local/bin/trunk \
  && cargo install --locked wasm-bindgen-cli --version 0.2.118
 
 COPY Cargo.toml ./
