@@ -13,7 +13,7 @@ and has no outbound network dependencies at runtime.
 
 This repository contains the **P1 shared foundations** (identity, RBAC,
 sessions, admin security, retention, monitoring, reference data,
-notifications, middleware stack, 52 no-mock integration tests) **plus**
+notifications, middleware stack, 55 no-mock P1 integration tests) **plus**
 the complete P1 frontend surface (Yew SPA shell, router, auth / toast /
 notifications context, typed API client with 3-second timeout +
 single-GET-retry, `PermGate`-aware nav, real admin / monitoring /
@@ -53,7 +53,7 @@ delivered and live in `dist/`**, **plus P3 cross-domain integration
   opt-out, retention sweep fan-out, metric-rollup idempotency,
   notification retry advancement, plus the existing alert-evaluator →
   notification-center and report-scheduler → artifact-plus-notification
-  pipelines. See `crates/backend/tests/integration_tests.rs` (14
+  pipelines. See `crates/backend/tests/integration_tests.rs` (17
   passing).
 
 The endpoint-parity audit (`scripts/audit_endpoints.sh`) runs in strict
@@ -144,17 +144,21 @@ Run the broad test gate from the repo root:
 
 - **Gate 1** — backend cargo tests (terraops-shared + terraops-backend)
   via the `tests` Docker image, executed against a real Postgres. The
-  no-mock integration suites (`http_p1.rs` = 52 tests, `parity_tests.rs`
+  no-mock integration suites (`http_p1.rs` = 55 tests, `parity_tests.rs`
   = 52 P-A/P-B endpoint tests, `talent_{search,recommend,weights,
-  watchlist,feedback}_tests.rs` = 39 tests, `integration_tests.rs` = 14
+  watchlist,feedback}_tests.rs` = 67 tests, `integration_tests.rs` = 17
   P3/P4 cross-domain + hardening tests, plus `mtls_handshake_tests.rs` =
-  4 real transport-layer rustls tests — ~161 total) run serialized
-  (`--test-threads=1`) because they reuse one DB. Line coverage is
-  measured by `cargo llvm-cov` across the backend `--lib` unit tests
-  **and** every backend test binary (so `#[cfg(test)]` modules inside
-  `crates/backend/src/**` contribute too) and enforced against the
+  4 real transport-layer rustls tests, plus targeted suites
+  `parity_success_tests`, `budget_tests`, `deep_products_tests`,
+  `deep_metrics_kpi_tests`, `deep_alerts_reports_tests`,
+  `deep_admin_surface_tests`, `deep_jobs_scheduler_tests`,
+  `audit9_bundle_tests`, `csrf_tests` — ~275 total across all 19 test
+  binaries) run serialized (`--test-threads=1`) because they reuse one DB.
+  Line coverage is measured by `cargo llvm-cov` across the backend `--lib`
+  unit tests **and** every backend test binary (so `#[cfg(test)]` modules
+  inside `crates/backend/src/**` contribute too) and enforced against the
   planning-contract floor `GATE1_LINE_FLOOR=94` (currently measured at
-  ~94.83% lines). The coverage scope
+  ~94.52% lines). The coverage scope
   excludes pure-IO boot modules (`main.rs`, `app.rs`, `tls.rs`, `spa.rs`,
   `config.rs`, `db.rs`, `seed.rs`, `storage/`, `models/`) which are
   exercised end-to-end by `docker compose up --build` rather than by
@@ -166,13 +170,13 @@ Run the broad test gate from the repo root:
   coverage", because it is neither.
 
   **What this 100 % actually measures.** It is a **verification-matrix
-  score** (`covered_rows / total_rows × 100`) over the 69-row matrix in
+  score** (`covered_rows / total_rows × 100`) over the 67-row matrix in
   [`docs/test-coverage.md`](./docs/test-coverage.md). Each row declares
   one grep-verifiable piece of evidence — a `#[wasm_bindgen_test]`
   function name, a Playwright spec file in `e2e/specs/`, or a `Route::`
   enum variant in `crates/frontend/src/router.rs` — and
   `scripts/frontend_verify.sh` mechanically verifies every row exists
-  exactly as declared. 69 of 69 `covered` rows pass that check today.
+  exactly as declared. 67 of 67 `covered` rows pass that check today.
 
   **What it is NOT.** It is **not** source-line coverage of
   `crates/frontend/src/**`. No statement-level wasm line count is
@@ -362,18 +366,18 @@ plan.md                     # repo-local execution checklist
 Current-scope disclosures (updated as features land):
 
 - **Backend P1 + P-A + P-B + P-C + P3 + P4 hardening are complete and
-  integrated.** 157 no-mock integration tests against real Postgres
-  through the full middleware stack:
-    - `http_p1.rs` — 52 P1 tests (system S1–S2, auth A1–A5, users U1–U10,
+  integrated.** ~275 no-mock integration tests against real Postgres
+  through the full middleware stack across 19 test binaries (main suites):
+    - `http_p1.rs` — 55 P1 tests (system S1–S2, auth A1–A5, users U1–U10,
       security SEC1–SEC9, retention R1–R3, monitoring M1–M4, reference-data
-      REF1–REF9, notifications N1–N7).
+      REF1–REF9, notifications N1–N9).
     - `parity_tests.rs` — 52 P-A/P-B tests (products P1–P14, imports
       I1–I7, env E1–E6, metrics MD1–MD7, KPI K1–K6, alerts AL1–AL6,
       reports RP1–RP6) covering the auth/RBAC surface for every endpoint.
     - `talent_{search,recommend,weights,watchlist,feedback}_tests.rs` —
-      39 P-C talent tests covering T1–T13 including cold-start →
+      67 P-C talent tests covering T1–T14 including cold-start →
       blended scoring transition at the 10-feedback threshold.
-    - `integration_tests.rs` — 14 P3/P4 cross-domain tests: retention
+    - `integration_tests.rs` — 17 P3/P4 cross-domain tests: retention
       env_raw/kpi/feedback purges, audit-indefinite policy, ttl=0
       retains, alert evaluator → notification, report scheduler →
       artifact + notification, retention sweep job, metric rollup
