@@ -44,7 +44,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
-SPEC_FILE="${SPEC_FILE:-${REPO_ROOT}/docs/api-spec.md}"
+SPEC_FILE="${SPEC_FILE:-${REPO_ROOT}/../docs/api-spec.md}"
 TESTS_DIR="${REPO_ROOT}/crates/backend/tests"
 HANDLERS_DIR="${REPO_ROOT}/crates/backend/src"
 MARKER="${REPO_ROOT}/crates/backend/tests/.audit_strict"

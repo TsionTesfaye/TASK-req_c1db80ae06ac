@@ -25,7 +25,7 @@
 #       (a) the `wasm-bindgen-test` suite for `terraops-frontend` under
 #           `wasm-bindgen-test-runner` (Node mode; no pinned Chromium);
 #       (b) `scripts/frontend_verify.sh`, which parses
-#           `docs/test-coverage.md`'s 53-row matrix, grep-validates every
+#           `docs/test-coverage.md`'s 70-row matrix, grep-validates every
 #           row's evidence in the codebase, and enforces the floor
 #           `GATE2_FVM_FLOOR=90`. "covered" rows with missing evidence
 #           are HARD failures (no dishonest greens).
@@ -140,14 +140,17 @@ else
     # is 124 when the deadline fires, which propagates through `if !` as a
     # failure — a hanging test is therefore treated the same as a failing test.
     # Budget: Gate 1a + 1b each get 30 minutes — generous but finite.
-    if ! timeout 1800 compose run --rm tests bash -c "${gate1a_cmd}"; then
+    # NOTE: `timeout` executes a binary — it cannot see shell functions.
+    # Use `docker compose` directly (not the `compose` alias) in every
+    # timeout call so the command is resolvable on PATH.
+    if ! timeout 1800 docker compose run --rm tests bash -c "${gate1a_cmd}"; then
         if [[ $? -eq 124 ]]; then
             echo "[gate1a] FAILED — test suite exceeded 30-minute deadline (possible hung test)." >&2
         else
             echo "[gate1a] FAILED — cargo test reported failures (test-regression gate)." >&2
         fi
         failed=1
-    elif ! timeout 1800 compose run --rm tests bash -c "${gate1b_cmd}"; then
+    elif ! timeout 1800 docker compose run --rm tests bash -c "${gate1b_cmd}"; then
         if [[ $? -eq 124 ]]; then
             echo "[gate1b] FAILED — coverage run exceeded 30-minute deadline." >&2
         else
@@ -178,7 +181,7 @@ GATE2_FVM_FLOOR="${GATE2_FVM_FLOOR:-90}"
 
 section "Gate 2a — frontend wasm-bindgen-test suite (Node mode, no Chromium)"
 # Budget: 10 minutes — WASM compilation + Node runner; first build is slow.
-if ! timeout 600 compose run --rm --no-deps tests bash -c '
+if ! timeout 600 docker compose run --rm --no-deps tests bash -c '
     set -e
     cargo --version
     node --version
