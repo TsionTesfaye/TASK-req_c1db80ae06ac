@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # frontend_verify.sh — Gate 2 enforcement for the Frontend Verification Matrix.
 #
-# Reads the markdown matrix at docs/test-coverage.md, validates every row's
+# Reads the markdown matrix at test-coverage.md (repo root), validates every row's
 # evidence exists in the repo, and enforces the score floor
 # GATE2_FVM_FLOOR (default 90).
 #
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
-MATRIX="${REPO_ROOT}/../docs/test-coverage.md"
+MATRIX="${REPO_ROOT}/test-coverage.md"
 FLOOR="${GATE2_FVM_FLOOR:-90}"
 
 if [[ ! -f "${MATRIX}" ]]; then

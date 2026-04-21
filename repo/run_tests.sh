@@ -25,7 +25,7 @@
 #       (a) the `wasm-bindgen-test` suite for `terraops-frontend` under
 #           `wasm-bindgen-test-runner` (Node mode; no pinned Chromium);
 #       (b) `scripts/frontend_verify.sh`, which parses
-#           `docs/test-coverage.md`'s 70-row matrix, grep-validates every
+#           `test-coverage.md`'s 70-row matrix, grep-validates every
 #           row's evidence in the codebase, and enforces the floor
 #           `GATE2_FVM_FLOOR=90`. "covered" rows with missing evidence
 #           are HARD failures (no dishonest greens).
