@@ -105,10 +105,17 @@ RUN apt-get update \
     || (echo "trunk: pre-built not available for ${ARCH} at v0.21.14 — falling back to cargo install" \
         && rm -f "${TRUNK_TGZ}" \
         && cargo install --locked trunk --version 0.21.14) \
- && curl --connect-timeout 30 --max-time 120 -fsSL \
-      "https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.118/wasm-bindgen-0.2.118-${ARCH}-unknown-linux-gnu.tar.gz" \
-    | tar -xz --strip-components=1 -C /usr/local/bin \
-         "wasm-bindgen-0.2.118-${ARCH}-unknown-linux-gnu/wasm-bindgen" \
+ && WBG_VER="0.2.118" \
+ && WBG_TGZ="/tmp/wasm-bindgen.tar.gz" \
+ && WBG_URL="https://github.com/rustwasm/wasm-bindgen/releases/download/${WBG_VER}/wasm-bindgen-${WBG_VER}-${ARCH}-unknown-linux-musl.tar.gz" \
+ && (curl --connect-timeout 30 --max-time 120 -fsSLo "${WBG_TGZ}" "${WBG_URL}" \
+     && tar -xzf "${WBG_TGZ}" --strip-components=1 -C /usr/local/bin \
+            "wasm-bindgen-${WBG_VER}-${ARCH}-unknown-linux-musl/wasm-bindgen" \
+     && rm -f "${WBG_TGZ}" \
+     && echo "wasm-bindgen: pre-built musl binary installed for ${ARCH}") \
+    || (echo "wasm-bindgen: pre-built musl binary not available for ${ARCH} — falling back to cargo install" \
+        && rm -f "${WBG_TGZ}" \
+        && cargo install --locked wasm-bindgen-cli --version "${WBG_VER}") \
  && chmod +x /usr/local/bin/trunk /usr/local/bin/wasm-bindgen
 
 # NOTE: cargo-chef WASM cook is intentionally omitted.
