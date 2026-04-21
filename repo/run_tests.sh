@@ -60,6 +60,19 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 2
 fi
 
+# macOS ships without GNU timeout (Linux coreutils). Use gtimeout if present
+# (installed by `brew install coreutils`), otherwise define a no-op shim that
+# just drops the timeout value and runs the command — the deadline is advisory
+# on developer machines; CodeBuild (Linux) always has the real timeout binary.
+if ! command -v timeout >/dev/null 2>&1; then
+    if command -v gtimeout >/dev/null 2>&1; then
+        timeout() { gtimeout "$@"; }
+    else
+        # No timeout binary: strip the first argument (duration) and exec the rest.
+        timeout() { shift; "$@"; }
+    fi
+fi
+
 compose() { docker compose "$@"; }
 
 # ---- Absolute clean slate -----------------------------------------------
