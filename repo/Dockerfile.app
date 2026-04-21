@@ -100,16 +100,22 @@ RUN apt-get update \
          "wasm-bindgen-0.2.118-${ARCH}-unknown-linux-gnu/wasm-bindgen" \
  && chmod +x /usr/local/bin/trunk /usr/local/bin/wasm-bindgen
 
-# Cook WASM-target dependencies (cached when manifests unchanged).
-# Trunk.toml sets offline=true + release=true so the cook args match trunk's
-# internal cargo invocation and compiled artifacts are reused.
-COPY --from=planner /workspace/recipe.json recipe.json
-RUN cargo chef cook --release --target wasm32-unknown-unknown --recipe-path recipe.json
+# NOTE: cargo-chef WASM cook is intentionally omitted.
+# The shared recipe.json includes backend-only crates (ring, sqlx, actix-web)
+# that do not compile for wasm32-unknown-unknown.  Cooking the full recipe for
+# that target fails on ring (needs clang) and on other non-WASM-portable crates.
+# A frontend-specific recipe from a separate workspace manifest would fix this
+# but is deferred.  The main incremental benefit is still preserved via Docker
+# layer caching at the COPY boundary: backend source changes do NOT invalidate
+# the trunk build layer because crates/backend is not copied into this stage.
 
-# Build the Yew SPA — only this layer re-runs on frontend src changes.
-COPY Cargo.toml ./
+# Build the Yew SPA.
+# The workspace Cargo.toml lists crates/backend as a member, so cargo metadata
+# (called by trunk) requires backend/Cargo.toml to exist.  We copy only the
+# manifest (not src/) so backend source changes do NOT invalidate this layer.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/backend/Cargo.toml  ./crates/backend/Cargo.toml
 COPY crates/shared   ./crates/shared
-COPY crates/backend  ./crates/backend
 COPY crates/frontend ./crates/frontend
 
 WORKDIR /workspace/crates/frontend
