@@ -26,10 +26,14 @@
 # only re-runs when the rust base image changes.
 FROM rust:1.88-bookworm AS chef
 
-RUN cargo install cargo-chef --locked
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config libssl-dev \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates curl xz-utils \
+ && rm -rf /var/lib/apt/lists/* \
+ && ARCH=$(uname -m) \
+ && curl -fsSL \
+      "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-${ARCH}-unknown-linux-gnu.tar.xz" \
+    | tar -xJ -C /usr/local/bin cargo-chef \
+ && chmod +x /usr/local/bin/cargo-chef
 
 WORKDIR /workspace
 
