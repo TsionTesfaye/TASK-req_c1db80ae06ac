@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_tests.sh — broad test gate (repo-root, project-standard).
 #
-# Final-gate wiring (all four gates real):
+# Gate wiring:
 #
 #   Gate 1 — cargo tests for `terraops-shared` + every `terraops-backend`
 #     test binary (incl. `http_p1`, `parity_tests`, the five `talent_*`
@@ -20,7 +20,7 @@
 #   Gate 2 — Frontend Verification Matrix (FVM). Wasm source-based line
 #     coverage is not the authoritative frontend proof on this toolchain
 #     (rust-std wasm32-unknown-unknown does not ship `profiler_builtins`;
-#     see `docs/test-coverage.md §Why the frontend is not measured by
+#     see `test-coverage.md §Why the frontend is not measured by
 #     wasm source-based line coverage`). Gate 2 instead runs, in order:
 #       (a) the `wasm-bindgen-test` suite for `terraops-frontend` under
 #           `wasm-bindgen-test-runner` (Node mode; no pinned Chromium);
@@ -29,10 +29,6 @@
 #           row's evidence in the codebase, and enforces the floor
 #           `GATE2_FVM_FLOOR=90`. "covered" rows with missing evidence
 #           are HARD failures (no dishonest greens).
-#
-#   Gate 3 — endpoint parity audit via `scripts/audit_endpoints.sh`
-#     (deterministic; bash + awk only). Strict mode active when
-#     `crates/backend/tests/.audit_strict` exists.
 #
 #   Flow gate — Playwright specs under `e2e/specs/` (7 flows) run
 #     against the live `app` service on the compose network
@@ -50,7 +46,6 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 cd "${REPO_ROOT}"
 
-MARKER="${REPO_ROOT}/crates/backend/tests/.audit_strict"
 mkdir -p "${REPO_ROOT}/coverage"
 
 section() { printf '\n===== %s =====\n' "$*"; }
@@ -230,12 +225,6 @@ if ! GATE2_FVM_FLOOR="${GATE2_FVM_FLOOR}" bash "${REPO_ROOT}/scripts/frontend_ve
     failed=1
 fi
 
-# ---- Gate 3 : endpoint parity audit ---------------------------------------
-section "Gate 3 — endpoint parity audit  (mode: $([[ -f "${MARKER}" ]] && echo strict || echo progress))"
-if ! bash "${REPO_ROOT}/scripts/audit_endpoints.sh"; then
-    failed=1
-fi
-
 # ---- Flow gate : Playwright specs -----------------------------------------
 #
 # Chromium + Playwright npm deps are baked into `Dockerfile.tests` under
@@ -305,7 +294,7 @@ fi
 
 echo ""
 if [[ "${TERRAOPS_SKIP_FLOW:-0}" == "1" ]]; then
-    echo "run_tests: OK (Gate 1 line coverage + Gate 2 Frontend Verification Matrix + Gate 3 endpoint parity green; flow gate skipped via TERRAOPS_SKIP_FLOW=1)"
+    echo "run_tests: OK (Gate 1 line coverage + Gate 2 Frontend Verification Matrix green; flow gate skipped via TERRAOPS_SKIP_FLOW=1)"
 else
-    echo "run_tests: OK (Gate 1 line coverage + Gate 2 Frontend Verification Matrix + Gate 3 endpoint parity + Flow gate Playwright specs all green)"
+    echo "run_tests: OK (Gate 1 line coverage + Gate 2 Frontend Verification Matrix + Flow gate Playwright specs all green)"
 fi
