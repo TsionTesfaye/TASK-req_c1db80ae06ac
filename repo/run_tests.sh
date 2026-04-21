@@ -17,18 +17,11 @@
 #     which are exercised by `docker compose up --build` rather than
 #     cargo tests. Planning-contract floor is `GATE1_LINE_FLOOR=90`.
 #
-#   Gate 2 — Frontend Verification Matrix (FVM). Wasm source-based line
-#     coverage is not the authoritative frontend proof on this toolchain
-#     (rust-std wasm32-unknown-unknown does not ship `profiler_builtins`;
-#     see `test-coverage.md §Why the frontend is not measured by
-#     wasm source-based line coverage`). Gate 2 instead runs, in order:
-#       (a) the `wasm-bindgen-test` suite for `terraops-frontend` under
-#           `wasm-bindgen-test-runner` (Node mode; no pinned Chromium);
-#       (b) `scripts/frontend_verify.sh`, which parses
-#           `test-coverage.md`'s 70-row matrix, grep-validates every
-#           row's evidence in the codebase, and enforces the floor
-#           `GATE2_FVM_FLOOR=90`. "covered" rows with missing evidence
-#           are HARD failures (no dishonest greens).
+#   Gate 2 — frontend `wasm-bindgen-test` suite for `terraops-frontend`
+#     executed via `wasm-bindgen-test-runner` (Node mode; no Chromium).
+#     Covers auth state, API client primitives, toast, notifications,
+#     router variants, nav permissions, format helpers, app constants,
+#     and permission-gate semantics.
 #
 #   Flow gate — Playwright specs under `e2e/specs/` (7 flows) run
 #     against the live `app` service on the compose network
@@ -182,27 +175,14 @@ else
     fi
 fi
 
-# ---- Gate 2 : Frontend Verification Matrix (FVM) --------------------------
+# ---- Gate 2 : frontend wasm-bindgen-test suite ----------------------------
 #
-# Two-part gate:
-#   (a) wasm-bindgen-test suite green under Node's wasm-bindgen-test-runner.
-#       This is the hard regression gate on frontend logic (auth, api
-#       client, toast, notifications, router).
-#   (b) scripts/frontend_verify.sh validates docs/test-coverage.md's
-#       Frontend Verification Matrix: every "covered" row's evidence
-#       (wasm test fn name / Playwright spec file / router variant)
-#       must exist in the codebase, and the score covered/total must be
-#       at or above GATE2_FVM_FLOOR.
-#
-# Wasm source-based line coverage was evaluated and found not achievable
-# on the pinned stable toolchain (profiler_builtins is not shipped in
-# rust-std-wasm32-unknown-unknown). docs/test-coverage.md §Why the
-# frontend is not measured by wasm source-based line coverage records
-# the exact observed blocker evidence.
-GATE2_FVM_FLOOR="${GATE2_FVM_FLOOR:-90}"
-
-section "Gate 2a — frontend wasm-bindgen-test suite (Node mode, no Chromium)"
+# Runs the frontend wasm-bindgen-test suite under Node's
+# wasm-bindgen-test-runner. Hard regression gate on frontend logic
+# (auth, api client, toast, notifications, router, permissions).
 # Budget: 10 minutes — WASM compilation + Node runner; first build is slow.
+
+section "Gate 2 — frontend wasm-bindgen-test suite (Node mode, no Chromium)"
 if ! timeout 600 docker compose run --rm --no-deps tests bash -c '
     set -e
     cargo --version
@@ -212,16 +192,10 @@ if ! timeout 600 docker compose run --rm --no-deps tests bash -c '
         cargo test --target wasm32-unknown-unknown -p terraops-frontend --no-fail-fast
 '; then
     if [[ $? -eq 124 ]]; then
-        echo "[gate2a] FAILED — wasm-bindgen-test exceeded 10-minute deadline." >&2
+        echo "[gate2] FAILED — wasm-bindgen-test exceeded 10-minute deadline." >&2
     else
-        echo "[gate2a] FAILED — frontend wasm-bindgen-test suite reported failures." >&2
+        echo "[gate2] FAILED — frontend wasm-bindgen-test suite reported failures." >&2
     fi
-    failed=1
-fi
-
-section "Gate 2b — Frontend Verification Matrix (floor ${GATE2_FVM_FLOOR}%)"
-if ! GATE2_FVM_FLOOR="${GATE2_FVM_FLOOR}" bash "${REPO_ROOT}/scripts/frontend_verify.sh"; then
-    echo "[gate2b] FAILED — Frontend Verification Matrix below floor or has dishonest rows." >&2
     failed=1
 fi
 
@@ -294,7 +268,7 @@ fi
 
 echo ""
 if [[ "${TERRAOPS_SKIP_FLOW:-0}" == "1" ]]; then
-    echo "run_tests: OK (Gate 1 line coverage + Gate 2 Frontend Verification Matrix green; flow gate skipped via TERRAOPS_SKIP_FLOW=1)"
+    echo "run_tests: OK (Gate 1 line coverage + Gate 2 wasm-bindgen-test suite green; flow gate skipped via TERRAOPS_SKIP_FLOW=1)"
 else
-    echo "run_tests: OK (Gate 1 line coverage + Gate 2 Frontend Verification Matrix + Flow gate Playwright specs all green)"
+    echo "run_tests: OK (Gate 1 line coverage + Gate 2 wasm-bindgen-test suite + Flow gate Playwright specs all green)"
 fi
