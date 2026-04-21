@@ -113,3 +113,94 @@ pub fn require_any_permission(ctx: &AuthContext, codes: &[&str]) -> Result<(), A
     }
     Err(AppError::Forbidden("missing permission"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn ctx(perms: &[&str]) -> AuthContext {
+        AuthContext {
+            user_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            roles: vec![],
+            permissions: perms.iter().map(|s| s.to_string()).collect(),
+            display_name: "Test".into(),
+            email_mask: "t***@example.com".into(),
+            timezone: None,
+        }
+    }
+
+    #[test]
+    fn has_permission_positive() {
+        let c = ctx(&["product.read", "product.manage"]);
+        assert!(c.has_permission("product.read"));
+    }
+
+    #[test]
+    fn has_permission_negative() {
+        let c = ctx(&["product.read"]);
+        assert!(!c.has_permission("product.manage"));
+    }
+
+    #[test]
+    fn require_permission_ok() {
+        let c = ctx(&["talent.read"]);
+        assert!(RequirePermission::check(&c, "talent.read").is_ok());
+    }
+
+    #[test]
+    fn require_permission_forbidden() {
+        let c = ctx(&["talent.read"]);
+        assert!(RequirePermission::check(&c, "talent.manage").is_err());
+    }
+
+    #[test]
+    fn owner_guard_allow_self_ok() {
+        let c = ctx(&[]);
+        assert!(OwnerGuard::allow_self(&c, c.user_id).is_ok());
+    }
+
+    #[test]
+    fn owner_guard_allow_self_rejects_other() {
+        let c = ctx(&[]);
+        assert!(OwnerGuard::allow_self(&c, Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn owner_guard_allow_self_or_permission_owner_wins() {
+        let c = ctx(&[]);
+        assert!(OwnerGuard::allow_self_or_permission(&c, c.user_id, "user.manage").is_ok());
+    }
+
+    #[test]
+    fn owner_guard_allow_self_or_permission_perm_wins() {
+        let c = ctx(&["user.manage"]);
+        assert!(OwnerGuard::allow_self_or_permission(&c, Uuid::new_v4(), "user.manage").is_ok());
+    }
+
+    #[test]
+    fn owner_guard_allow_self_or_permission_neither_fails() {
+        let c = ctx(&["product.read"]);
+        assert!(OwnerGuard::allow_self_or_permission(&c, Uuid::new_v4(), "user.manage").is_err());
+    }
+
+    #[test]
+    fn require_any_permission_first_match_ok() {
+        let c = ctx(&["talent.read"]);
+        assert!(require_any_permission(&c, &["talent.manage", "talent.read"]).is_ok());
+    }
+
+    #[test]
+    fn require_any_permission_none_fails() {
+        let c = ctx(&["product.read"]);
+        assert!(require_any_permission(&c, &["talent.manage", "talent.read"]).is_err());
+    }
+
+    #[test]
+    fn require_permission_fn_delegates_to_check() {
+        let c = ctx(&["x.y"]);
+        assert!(require_permission(&c, "x.y").is_ok());
+        assert!(require_permission(&c, "x.z").is_err());
+    }
+}

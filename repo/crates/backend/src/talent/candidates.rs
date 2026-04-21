@@ -120,6 +120,58 @@ fn order_by_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> &'static st
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn order_by_defaults_to_last_active_desc() {
+        assert_eq!(order_by_clause(None, None), " ORDER BY last_active_at DESC");
+    }
+
+    #[test]
+    fn order_by_unknown_column_falls_back_to_last_active() {
+        assert_eq!(order_by_clause(Some("bogus"), None), " ORDER BY last_active_at DESC");
+        assert_eq!(order_by_clause(Some("bogus"), Some("asc")), " ORDER BY last_active_at ASC");
+    }
+
+    #[test]
+    fn order_by_created_at() {
+        assert_eq!(order_by_clause(Some("created_at"), None), " ORDER BY created_at DESC");
+        assert_eq!(order_by_clause(Some("created_at"), Some("asc")), " ORDER BY created_at ASC");
+    }
+
+    #[test]
+    fn order_by_updated_at() {
+        assert_eq!(order_by_clause(Some("updated_at"), None), " ORDER BY updated_at DESC");
+        assert_eq!(order_by_clause(Some("updated_at"), Some("asc")), " ORDER BY updated_at ASC");
+    }
+
+    #[test]
+    fn order_by_full_name() {
+        assert_eq!(order_by_clause(Some("full_name"), None), " ORDER BY full_name DESC");
+        assert_eq!(order_by_clause(Some("full_name"), Some("asc")), " ORDER BY full_name ASC");
+    }
+
+    #[test]
+    fn order_by_years_experience() {
+        assert_eq!(order_by_clause(Some("years_experience"), None), " ORDER BY years_experience DESC");
+        assert_eq!(order_by_clause(Some("years_experience"), Some("asc")), " ORDER BY years_experience ASC");
+    }
+
+    #[test]
+    fn order_by_completeness_score() {
+        assert_eq!(order_by_clause(Some("completeness_score"), None), " ORDER BY completeness_score DESC");
+        assert_eq!(order_by_clause(Some("completeness_score"), Some("asc")), " ORDER BY completeness_score ASC");
+    }
+
+    #[test]
+    fn order_by_case_insensitive() {
+        assert_eq!(order_by_clause(Some("CREATED_AT"), Some("ASC")), " ORDER BY created_at ASC");
+        assert_eq!(order_by_clause(Some("Full_Name"), Some("DESC")), " ORDER BY full_name DESC");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn build_list_query(
     pool: &PgPool,

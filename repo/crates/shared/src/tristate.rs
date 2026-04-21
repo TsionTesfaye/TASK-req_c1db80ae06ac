@@ -44,3 +44,61 @@ where
         None => serializer.serialize_none(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    /// Helper struct that exercises both directions of the tri-state codec.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Patch {
+        #[serde(
+            default,
+            deserialize_with = "double_option",
+            serialize_with = "serialize_double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        field: Option<Option<String>>,
+    }
+
+    #[test]
+    fn absent_field_becomes_none() {
+        let p: Patch = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.field, None);
+    }
+
+    #[test]
+    fn explicit_null_becomes_some_none() {
+        let p: Patch = serde_json::from_str(r#"{"field": null}"#).unwrap();
+        assert_eq!(p.field, Some(None));
+    }
+
+    #[test]
+    fn value_becomes_some_some() {
+        let p: Patch = serde_json::from_str(r#"{"field": "hello"}"#).unwrap();
+        assert_eq!(p.field, Some(Some("hello".into())));
+    }
+
+    #[test]
+    fn serialize_some_some_emits_value() {
+        let p = Patch { field: Some(Some("world".into())) };
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains("\"world\""), "expected value in JSON: {s}");
+    }
+
+    #[test]
+    fn serialize_some_none_emits_null() {
+        let p = Patch { field: Some(None) };
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains("null"), "expected null in JSON: {s}");
+    }
+
+    #[test]
+    fn serialize_none_skips_field() {
+        // skip_serializing_if = "Option::is_none" prevents the field from appearing.
+        let p = Patch { field: None };
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(!s.contains("field"), "field should be absent: {s}");
+    }
+}

@@ -68,21 +68,10 @@ pub async fn upload_import(
 
     let row_count = parsed.len() as i32;
 
-    // Create batch
-    let batch_id: (Uuid,) = sqlx::query_as(
-        "INSERT INTO import_batches (uploaded_by, filename, kind, row_count) \
-         VALUES ($1, $2, $3, $4) RETURNING id",
-    )
-    .bind(user.0.user_id)
-    .bind(&filename)
-    .bind(kind)
-    .bind(row_count)
-    .fetch_one(&state.pool)
-    .await?;
-    let batch_id = batch_id.0;
-
-    // Insert rows and validate
+    // Validate all rows first (CPU-only, no DB round-trips).
     let mut error_count = 0i32;
+    let mut row_data: Vec<(i32, serde_json::Value, serde_json::Value, bool)> =
+        Vec::with_capacity(parsed.len());
     for (idx, raw) in parsed.iter().enumerate() {
         let errors = import_validator::validate_row(raw);
         let valid = errors.is_empty();
@@ -92,20 +81,41 @@ pub async fn upload_import(
         let errors_json = serde_json::Value::Array(
             errors.iter().map(|e| serde_json::Value::String(e.clone())).collect(),
         );
+        row_data.push(((idx + 1) as i32, raw.clone(), errors_json, valid));
+    }
+
+    // Persist everything in a single transaction.  Wrapping the 10k row
+    // INSERTs in one transaction reduces N independent WAL-flush round-trips
+    // to a single commit, keeping even large uploads well within the
+    // BudgetMw 3-second cap.
+    let mut tx = state.pool.begin().await?;
+
+    let batch_id: (Uuid,) = sqlx::query_as(
+        "INSERT INTO import_batches (uploaded_by, filename, kind, row_count) \
+         VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(user.0.user_id)
+    .bind(&filename)
+    .bind(kind)
+    .bind(row_count)
+    .fetch_one(&mut *tx)
+    .await?;
+    let batch_id = batch_id.0;
+
+    for (row_number, raw, errors_json, valid) in &row_data {
         sqlx::query(
             "INSERT INTO import_rows (batch_id, row_number, raw, errors, valid) \
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(batch_id)
-        .bind((idx + 1) as i32)
+        .bind(row_number)
         .bind(raw)
-        .bind(&errors_json)
+        .bind(errors_json)
         .bind(valid)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
     }
 
-    // Update error_count + status
     let status = if error_count == 0 { "validated" } else { "uploaded" };
     sqlx::query(
         "UPDATE import_batches SET error_count = $2, status = $3 WHERE id = $1",
@@ -113,8 +123,10 @@ pub async fn upload_import(
     .bind(batch_id)
     .bind(error_count)
     .bind(status)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(HttpResponse::Created().json(serde_json::json!({
         "id": batch_id,

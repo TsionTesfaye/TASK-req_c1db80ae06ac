@@ -82,6 +82,132 @@ async fn t_t5_create_role_admin_ok() {
     assert!(body["id"].is_string());
 }
 
+// ── T4 extended: list_filtered branch coverage (status, skills, min_years) ──
+
+#[actix_web::test]
+async fn t_t4_filter_by_status() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4stat@example.com", &[Role::Recruiter]).await;
+    // Seed one open and one closed role.
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, created_by) \
+         SELECT 'Open Role', '{rust}', 2, 'open', id FROM users WHERE username='admin' LIMIT 1"
+    ).execute(&ctx.pool).await.unwrap_or_default();
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, created_by) \
+         SELECT 'Closed Role', '{go}', 1, 'closed', id FROM users WHERE username='admin' LIMIT 1"
+    ).execute(&ctx.pool).await.unwrap_or_default();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?status=open")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    let arr = body.as_array().unwrap();
+    for r in arr {
+        assert_eq!(r["status"], "open", "only open roles expected");
+    }
+}
+
+#[actix_web::test]
+async fn t_t4_filter_by_min_years() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4miny@example.com", &[Role::Recruiter]).await;
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, created_by) \
+         SELECT 'Senior Role', '{rust}', 8, 'open', id FROM users WHERE username='admin' LIMIT 1"
+    ).execute(&ctx.pool).await.unwrap_or_default();
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, created_by) \
+         SELECT 'Junior Role', '{rust}', 0, 'open', id FROM users WHERE username='admin' LIMIT 1"
+    ).execute(&ctx.pool).await.unwrap_or_default();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?min_years=5")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    let arr = body.as_array().unwrap();
+    for r in arr {
+        let min_y = r["min_years"].as_i64().unwrap_or(0);
+        assert!(min_y >= 5, "expected min_years>=5, got {min_y}");
+    }
+}
+
+#[actix_web::test]
+async fn t_t4_filter_by_skills_and_sort() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4sk@example.com", &[Role::Recruiter]).await;
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, created_by) \
+         SELECT 'Rust Role', '{rust,actix}', 3, 'open', id FROM users WHERE username='admin' LIMIT 1"
+    ).execute(&ctx.pool).await.unwrap_or_default();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    // Exercise skills_any filter + sort_by/sort_dir paths
+    for sort_col in &["title", "min_years", "opened_at", "status", "created_at"] {
+        let req = test::TestRequest::get()
+            .uri(&format!("/api/v1/talent/roles?skills=rust&sort_by={sort_col}&sort_dir=asc"))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request();
+        let res = test::call_service(&app, req).await;
+        assert_eq!(res.status(), StatusCode::OK, "sort_by={sort_col} should 200");
+    }
+    // Exercise sort_dir desc
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?sort_by=title&sort_dir=desc")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[actix_web::test]
+async fn t_t4_filter_by_q_and_pagination() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t4qpg@example.com", &[Role::Recruiter]).await;
+    sqlx::query(
+        "INSERT INTO roles_open (title, required_skills, min_years, status, created_by) \
+         SELECT 'Actix Engineer', '{actix}', 2, 'open', id FROM users WHERE username='admin' LIMIT 1"
+    ).execute(&ctx.pool).await.unwrap_or_default();
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    // Exercise q (title ILIKE) filter
+    let req = test::TestRequest::get()
+        .uri("/api/v1/talent/roles?q=Actix&page=1&page_size=20")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(res).await;
+    let arr = body.as_array().unwrap();
+    for r in arr {
+        let title = r["title"].as_str().unwrap_or("");
+        assert!(title.to_lowercase().contains("actix"), "q filter mismatch: {title}");
+    }
+}
+
+#[actix_web::test]
+async fn t_t5_create_role_invalid_status_rejected() {
+    let ctx = TestCtx::new().await;
+    let (_uid, token) = authed(&ctx.pool, &ctx.keys, "t5invstat@example.com", &[Role::Administrator]).await;
+    let app = test::init_service(build_test_app(ctx.state.clone())).await;
+    let req = test::TestRequest::post()
+        .uri("/api/v1/talent/roles")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .set_json(json!({
+            "title": "Bad Role",
+            "required_skills": ["rust"],
+            "min_years": 1,
+            "status": "unknown_status"
+        }))
+        .to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 // ── T6: GET /api/v1/talent/recommendations ───────────────────────────────────
 
 #[actix_web::test]

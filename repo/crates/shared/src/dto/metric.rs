@@ -345,4 +345,186 @@ mod tests {
         let back: SeriesPoint = serde_json::from_str(&s).unwrap();
         assert_eq!(back.computation_id, Some(cid));
     }
+
+    // ── FusionConfig / AlignmentRules / default_confidence_labels ─────────────
+
+    #[test]
+    fn alignment_rules_default_is_sane() {
+        let ar = AlignmentRules::default();
+        assert_eq!(ar.min_alignment, 0.25);
+        assert_eq!(ar.warn_alignment, 0.75);
+        assert!(ar.strict);
+    }
+
+    #[test]
+    fn default_confidence_labels_produces_three_bands() {
+        let bands = default_confidence_labels();
+        assert_eq!(bands.len(), 3);
+        assert_eq!(bands[0].label, "high");
+        assert_eq!(bands[1].label, "medium");
+        assert_eq!(bands[2].label, "low");
+    }
+
+    #[test]
+    fn fusion_config_default_combines_defaults() {
+        let cfg = FusionConfig::default();
+        assert_eq!(cfg.alignment, AlignmentRules::default());
+        assert_eq!(cfg.confidence_labels.len(), 3);
+    }
+
+    #[test]
+    fn from_params_null_returns_default() {
+        let cfg = FusionConfig::from_params_value(&serde_json::Value::Null).unwrap();
+        assert_eq!(cfg.alignment.min_alignment, 0.25);
+    }
+
+    #[test]
+    fn from_params_non_object_returns_error() {
+        let err = FusionConfig::from_params_value(&serde_json::json!([1, 2])).unwrap_err();
+        assert!(err.contains("JSON object"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_empty_object_returns_default() {
+        let cfg = FusionConfig::from_params_value(&serde_json::json!({})).unwrap();
+        assert_eq!(cfg.alignment.min_alignment, 0.25);
+        assert_eq!(cfg.confidence_labels.len(), 3);
+    }
+
+    #[test]
+    fn from_params_alignment_overrides_defaults() {
+        let v = serde_json::json!({
+            "alignment": { "min_alignment": 0.1, "warn_alignment": 0.6, "strict": false }
+        });
+        let cfg = FusionConfig::from_params_value(&v).unwrap();
+        assert_eq!(cfg.alignment.min_alignment, 0.1);
+        assert_eq!(cfg.alignment.warn_alignment, 0.6);
+        assert!(!cfg.alignment.strict);
+    }
+
+    #[test]
+    fn from_params_rejects_min_alignment_out_of_range() {
+        let v = serde_json::json!({
+            "alignment": { "min_alignment": 1.5, "warn_alignment": 0.8, "strict": true }
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("min_alignment"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_rejects_warn_alignment_out_of_range() {
+        let v = serde_json::json!({
+            "alignment": { "min_alignment": 0.2, "warn_alignment": -0.1, "strict": true }
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("warn_alignment"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_rejects_warn_below_min() {
+        let v = serde_json::json!({
+            "alignment": { "min_alignment": 0.8, "warn_alignment": 0.5, "strict": true }
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("warn_alignment"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_confidence_labels_override() {
+        let v = serde_json::json!({
+            "confidence_labels": [
+                { "label": "good", "min": 0.7, "max": 1.01, "css_class": "ok" },
+                { "label": "bad",  "min": 0.0, "max": 0.7,  "css_class": "warn" }
+            ]
+        });
+        let cfg = FusionConfig::from_params_value(&v).unwrap();
+        assert_eq!(cfg.confidence_labels.len(), 2);
+        assert_eq!(cfg.confidence_labels[0].label, "good");
+    }
+
+    #[test]
+    fn from_params_rejects_empty_confidence_labels() {
+        let v = serde_json::json!({ "confidence_labels": [] });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_rejects_blank_label_name() {
+        let v = serde_json::json!({
+            "confidence_labels": [{ "label": "  ", "min": 0.0, "max": 1.0, "css_class": "ok" }]
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("non-empty"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_rejects_invalid_band_range() {
+        let v = serde_json::json!({
+            "confidence_labels": [{ "label": "x", "min": 0.5, "max": 0.3, "css_class": "ok" }]
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("max must be greater"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_rejects_invalid_css_class() {
+        let v = serde_json::json!({
+            "confidence_labels": [{ "label": "x", "min": 0.0, "max": 1.0, "css_class": "bad class!" }]
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("css_class"), "error: {err}");
+    }
+
+    #[test]
+    fn from_params_rejects_out_of_range_band_min_max() {
+        let v = serde_json::json!({
+            "confidence_labels": [{ "label": "x", "min": -0.1, "max": 1.0, "css_class": "ok" }]
+        });
+        let err = FusionConfig::from_params_value(&v).unwrap_err();
+        assert!(err.contains("min/max"), "error: {err}");
+    }
+
+    #[test]
+    fn label_for_maps_high_band() {
+        let cfg = FusionConfig::default();
+        let (label, css) = cfg.label_for(0.95);
+        assert_eq!(label, "high");
+        assert_eq!(css, "ok");
+    }
+
+    #[test]
+    fn label_for_maps_medium_band() {
+        let cfg = FusionConfig::default();
+        let (label, css) = cfg.label_for(0.65);
+        assert_eq!(label, "medium");
+        assert_eq!(css, "warn");
+    }
+
+    #[test]
+    fn label_for_maps_low_band() {
+        let cfg = FusionConfig::default();
+        let (label, css) = cfg.label_for(0.3);
+        assert_eq!(label, "low");
+        assert_eq!(css, "bad");
+    }
+
+    #[test]
+    fn label_for_last_band_inclusive_at_max() {
+        // The high band has max=1.01; values >= 0.80 and exactly at the boundary should resolve.
+        let cfg = FusionConfig::default();
+        let (label, _css) = cfg.label_for(1.0);
+        assert_eq!(label, "high");
+    }
+
+    #[test]
+    fn label_for_returns_unknown_when_no_band_matches() {
+        let cfg = FusionConfig {
+            alignment: AlignmentRules::default(),
+            confidence_labels: vec![],
+        };
+        let (label, css) = cfg.label_for(0.5);
+        assert_eq!(label, "unknown");
+        assert_eq!(css, "neutral");
+    }
 }

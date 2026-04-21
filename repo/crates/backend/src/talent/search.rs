@@ -78,3 +78,49 @@ impl CandidateQuery {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_page_defaults_to_1_and_50() {
+        let q = CandidateQuery::default();
+        assert_eq!(q.resolved_page(), (1, 50));
+    }
+
+    #[test]
+    fn resolved_page_clamps_below_min() {
+        let q = CandidateQuery { page: Some(0), page_size: Some(0), ..Default::default() };
+        let (p, ps) = q.resolved_page();
+        assert_eq!(p, 1, "page below 1 clamped to 1");
+        assert_eq!(ps, 1, "page_size below 1 clamped to 1");
+    }
+
+    #[test]
+    fn resolved_page_clamps_above_max() {
+        let q = CandidateQuery { page: Some(10), page_size: Some(999), ..Default::default() };
+        let (p, ps) = q.resolved_page();
+        assert_eq!(p, 10);
+        assert_eq!(ps, 200, "page_size above 200 clamped to 200");
+    }
+
+    #[test]
+    fn parsed_skills_none_returns_empty() {
+        let q = CandidateQuery::default();
+        assert!(q.parsed_skills().is_empty());
+    }
+
+    #[test]
+    fn parsed_skills_empty_string_returns_empty() {
+        let q = CandidateQuery { skills: Some("  ,  ,  ".into()), ..Default::default() };
+        assert!(q.parsed_skills().is_empty());
+    }
+
+    #[test]
+    fn parsed_skills_lowercases_and_trims() {
+        let q = CandidateQuery { skills: Some(" Rust , SQL , Go ".into()), ..Default::default() };
+        let skills = q.parsed_skills();
+        assert_eq!(skills, vec!["rust", "sql", "go"]);
+    }
+}

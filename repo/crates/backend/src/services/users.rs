@@ -105,6 +105,34 @@ pub fn db_name_to_role(name: &str) -> Option<Role> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_name_to_role_covers_all_known_names() {
+        assert_eq!(db_name_to_role("administrator"), Some(Role::Administrator));
+        assert_eq!(db_name_to_role("data_steward"),  Some(Role::DataSteward));
+        assert_eq!(db_name_to_role("analyst"),        Some(Role::Analyst));
+        assert_eq!(db_name_to_role("recruiter"),      Some(Role::Recruiter));
+        assert_eq!(db_name_to_role("regular_user"),   Some(Role::RegularUser));
+    }
+
+    #[test]
+    fn db_name_to_role_unknown_returns_none() {
+        assert_eq!(db_name_to_role("super_admin"), None);
+        assert_eq!(db_name_to_role(""),            None);
+        assert_eq!(db_name_to_role("ADMINISTRATOR"), None); // case-sensitive
+    }
+
+    #[test]
+    fn lockout_constants_match_design_contract() {
+        // Security Decision #7: 10 failures / 15-min window.
+        assert_eq!(LOCKOUT_FAILURE_THRESHOLD, 10);
+        assert_eq!(LOCKOUT_DURATION_MINUTES, 15);
+    }
+}
+
 pub async fn permissions_for_user(pool: &PgPool, user_id: Uuid) -> AppResult<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT DISTINCT p.code FROM permissions p \
