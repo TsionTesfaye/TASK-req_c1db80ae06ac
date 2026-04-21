@@ -8,13 +8,44 @@
 #   * entrypoint runs scripts/dev_bootstrap.sh then `terraops-backend serve`
 #   * bind :8443 with Rustls
 #
-# P1 completion: the real Yew SPA is built with Trunk + wasm-bindgen-cli in
-# the `frontend-build` stage below and its output is copied into `/app/dist/`
-# of the runtime image. The P0 scaffold shell (`crates/frontend/dist-scaffold`)
-# is no longer used by the runtime image.
+# Build stages
+# ────────────
+#   chef          — rust toolchain + cargo-chef; changes only on base image bump
+#   planner       — produces recipe.json from workspace manifests (no src copy)
+#   backend-build — cooks native deps (cached) → compiles backend binary
+#   frontend-build— cooks WASM deps (cached) → compiles Yew SPA via trunk
+#   runtime       — minimal debian image with binary + dist
+#
+# Incremental rebuild cost (Docker layer cache):
+#   src change only          → dep-cook layer is a cache hit; only app code recompiles  (~3–5 min)
+#   Cargo.toml / lock change → dep-cook layer rebuilds; full dep compile expected        (~25 min)
+#   toolchain / apt change   → only on explicit version bump in this file               (~25 min)
 
-# ---- Stage 1: backend binary ----------------------------------------------
-FROM rust:1.88-bookworm AS backend-build
+# ── Stage 0: cargo-chef base ─────────────────────────────────────────────────
+# Installing cargo-chef here keeps it out of the planner / build stages so it
+# only re-runs when the rust base image changes.
+FROM rust:1.88-bookworm AS chef
+
+RUN cargo install cargo-chef --locked
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# ── Stage 0b: workspace planner ──────────────────────────────────────────────
+# Scans Cargo.toml / Cargo.lock and emits recipe.json — a stable fingerprint of
+# the dependency graph.  This layer only re-runs when manifests change.
+FROM chef AS planner
+
+COPY Cargo.toml ./
+COPY crates/shared   ./crates/shared
+COPY crates/backend  ./crates/backend
+COPY crates/frontend ./crates/frontend
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 1: backend binary ───────────────────────────────────────────────────
+FROM chef AS backend-build
 
 ENV CARGO_TERM_COLOR=never \
     CARGO_NET_RETRY=10 \
@@ -23,23 +54,21 @@ ENV CARGO_TERM_COLOR=never \
     RUSTFLAGS="-C debuginfo=0" \
     SQLX_OFFLINE=true
 
-WORKDIR /workspace
+# Cook all native-target dependencies.  This layer is cached as long as
+# recipe.json (i.e. Cargo.toml / Cargo.lock) does not change.
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config libssl-dev \
- && rm -rf /var/lib/apt/lists/*
-
+# Build application code.  This is the only layer that re-runs on src changes.
 COPY Cargo.toml ./
 COPY crates/shared   ./crates/shared
 COPY crates/backend  ./crates/backend
 COPY crates/frontend ./crates/frontend
-
-# Build only the backend crate. `cargo -p terraops-backend` does not compile
-# `crates/frontend`, so no wasm toolchain is pulled here.
 RUN cargo build --release -p terraops-backend
 
-# ---- Stage 2: frontend WASM bundle ----------------------------------------
-FROM rust:1.88-bookworm AS frontend-build
+# ── Stage 2: frontend WASM bundle ────────────────────────────────────────────
+# Extends the chef base (which already has pkg-config + libssl-dev).
+FROM chef AS frontend-build
 
 ENV CARGO_TERM_COLOR=never \
     CARGO_NET_RETRY=10 \
@@ -47,19 +76,31 @@ ENV CARGO_TERM_COLOR=never \
     CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     RUSTFLAGS="-C debuginfo=0"
 
-WORKDIR /workspace
-
+# Install build tools using pre-built binaries — avoids compiling trunk or
+# wasm-bindgen-cli from source, which is both slow and OOM-prone on constrained
+# hosts (trunk bundles minify-html-common which LTO-compiles with a huge RSS).
+#
+# wasm-bindgen tarball layout: wasm-bindgen-0.2.118-<arch>-unknown-linux-gnu/
+#   wasm-bindgen   ← the binary trunk invokes
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates curl \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && rustup target add wasm32-unknown-unknown \
  && ARCH=$(uname -m) \
  && curl -fsSL \
       "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-${ARCH}-unknown-linux-gnu.tar.gz" \
     | tar -xz -C /usr/local/bin trunk \
- && chmod +x /usr/local/bin/trunk \
- && cargo install --locked wasm-bindgen-cli --version 0.2.118
+ && curl -fsSL \
+      "https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.118/wasm-bindgen-0.2.118-${ARCH}-unknown-linux-gnu.tar.gz" \
+    | tar -xz --strip-components=1 -C /usr/local/bin \
+         "wasm-bindgen-0.2.118-${ARCH}-unknown-linux-gnu/wasm-bindgen" \
+ && chmod +x /usr/local/bin/trunk /usr/local/bin/wasm-bindgen
 
+# Cook WASM-target dependencies (cached layer when manifests unchanged).
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN cargo chef cook --release --target wasm32-unknown-unknown --recipe-path recipe.json
+
+# Build the Yew SPA.  Only this layer re-runs on frontend src changes.
 COPY Cargo.toml ./
 COPY crates/shared   ./crates/shared
 COPY crates/backend  ./crates/backend
@@ -68,7 +109,7 @@ COPY crates/frontend ./crates/frontend
 WORKDIR /workspace/crates/frontend
 RUN trunk build --release --offline
 
-# ---- Final runtime ---------------------------------------------------------
+# ── Final runtime ─────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
