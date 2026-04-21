@@ -62,18 +62,19 @@ fi
 
 compose() { docker compose "$@"; }
 
-# ---- Clean slate: remove all locally-built service images and stopped
-#      containers so every gate starts from a completely fresh build.
-#      Base-layer pulls (rust:1.88-bookworm, postgres:16) are still cached
-#      by the Docker daemon registry store — only the project-built layers
-#      are purged.  This ensures no stale compiled artefacts survive between
-#      runs.  `|| true` on each step so a first-run (nothing to remove) does
-#      not abort the script.
-section "Clean slate — removing locally-built images and stopped containers"
-compose down --remove-orphans --volumes 2>/dev/null || true
-compose rm   --force --stop   2>/dev/null || true
-# Remove images built specifically for this compose project (not base images).
-compose images -q 2>/dev/null | xargs docker rmi --force 2>/dev/null || true
+# ---- Absolute clean slate -----------------------------------------------
+# Wipe every Docker resource on this daemon (containers, images, volumes,
+# build cache, networks) so no cached layer, compiled artefact, or old
+# image from a previous run can survive into the current one.
+# `docker system prune -af --volumes` is intentionally aggressive:
+#   -a   : remove ALL images, not just dangling ones
+#   -f   : no confirmation prompt
+#   --volumes : also wipe anonymous and named volumes
+# In the CodeBuild ephemeral environment this is safe and correct.
+# On a shared developer workstation this will also remove unrelated
+# project images — run with that understanding.
+section "Absolute clean slate — docker system prune -af --volumes"
+docker system prune -af --volumes 2>/dev/null || true
 
 failed=0
 
@@ -108,7 +109,7 @@ GATE1_TESTS=(http_p1 parity_tests parity_success_tests \
              audit9_bundle_tests csrf_tests)
 
 section "Gate 1 — cargo test + cargo llvm-cov (terraops-backend + terraops-shared, --fail-under-lines ${GATE1_LINE_FLOOR} floor)"
-if ! compose build --no-cache tests; then
+if ! compose build --no-cache --pull tests; then
     echo "[gate1] FAILED — could not build the 'tests' image." >&2
     failed=1
 else
@@ -244,7 +245,7 @@ else
     # passing TCP probe means the service is fully initialised.
     flow_ok=1
     # Build app image with --no-cache first, then bring it up.
-    if ! compose build --no-cache app; then
+    if ! compose build --no-cache --pull app; then
         echo "[flow] FAILED — could not build the 'app' image." >&2
         failed=1
         flow_ok=0
