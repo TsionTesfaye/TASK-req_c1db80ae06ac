@@ -37,7 +37,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HTTP_MULTIPLEXING=false \
     CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     SQLX_OFFLINE=true \
-    NODE_MAJOR=20
+    NODE_MAJOR=20 \
+    CARGO_BUILD_JOBS=4
 
 # System packages + Node.js LTS (for the wasm-bindgen-test-runner).
 #
@@ -64,7 +65,8 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/* \
- && update-alternatives --install /usr/bin/ld ld /usr/bin/mold 100
+ && update-alternatives --install /usr/bin/ld ld /usr/bin/mold 100 \
+ && update-alternatives --set ld /usr/bin/mold
 
 # wasm toolchain for Gate 2. `wasm-bindgen-cli` must match the
 # `wasm-bindgen` version resolved in Cargo.lock exactly (the schema is

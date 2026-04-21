@@ -32,10 +32,17 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates curl xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && ARCH=$(uname -m) \
- && curl --connect-timeout 30 --max-time 120 -fsSL \
-      "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-${ARCH}-unknown-linux-gnu.tar.xz" \
-    | tar -xJ --strip-components=1 -C /usr/local/bin \
-         "cargo-chef-${ARCH}-unknown-linux-gnu/cargo-chef" \
+ && CHEF_VER="0.1.77" \
+ && CHEF_TXZ="/tmp/cargo-chef.tar.xz" \
+ && CHEF_URL="https://github.com/LukeMathWalker/cargo-chef/releases/download/v${CHEF_VER}/cargo-chef-${ARCH}-unknown-linux-gnu.tar.xz" \
+ && (curl --connect-timeout 30 --max-time 120 -fsSLo "${CHEF_TXZ}" "${CHEF_URL}" \
+     && tar -xJf "${CHEF_TXZ}" --strip-components=1 -C /usr/local/bin \
+            "cargo-chef-${ARCH}-unknown-linux-gnu/cargo-chef" \
+     && rm -f "${CHEF_TXZ}" \
+     && echo "cargo-chef: pre-built binary installed for ${ARCH}") \
+    || (echo "cargo-chef: pre-built not available for ${ARCH} — falling back to cargo install" \
+        && rm -f "${CHEF_TXZ}" \
+        && cargo install --locked cargo-chef --version "${CHEF_VER}") \
  && chmod +x /usr/local/bin/cargo-chef
 
 WORKDIR /workspace
