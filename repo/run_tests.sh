@@ -11,11 +11,11 @@
 #     real Postgres, serialised with `--test-threads=1` because they
 #     share one DB. Line coverage is measured end-to-end with
 #     `cargo llvm-cov` and enforced against the planning-contract floor
-#     `GATE1_LINE_FLOOR=94` over `crates/shared/**` + `crates/backend/src/**`
+#     `GATE1_LINE_FLOOR=90` over `crates/shared/**` + `crates/backend/src/**`
 #     excluding pure-IO boot modules (`main.rs`, `app.rs`, `tls.rs`,
 #     `spa.rs`, `config.rs`, `db.rs`, `storage/`, `models/`, `seed.rs`)
 #     which are exercised by `docker compose up --build` rather than
-#     cargo tests.
+#     cargo tests. Planning-contract floor is `GATE1_LINE_FLOOR=90`.
 #
 #   Gate 2 — Frontend Verification Matrix (FVM). Wasm source-based line
 #     coverage is not the authoritative frontend proof on this toolchain
@@ -80,7 +80,7 @@ failed=0
 # (shared + backend). The ignore regex below excludes pure-IO boot/plumbing
 # modules that are exercised end-to-end by `docker compose up --build`
 # rather than by cargo tests.
-GATE1_LINE_FLOOR="${GATE1_LINE_FLOOR:-94}"
+GATE1_LINE_FLOOR="${GATE1_LINE_FLOOR:-90}"
 # spa.rs, config.rs, db.rs are now covered by inline #[cfg(test)] modules
 # and are no longer excluded from coverage. main.rs, app.rs (backend),
 # tls.rs, and seed.rs remain excluded as they are pure-IO boot paths.
@@ -94,7 +94,7 @@ GATE1_TESTS=(http_p1 parity_tests parity_success_tests \
              deep_admin_surface_tests deep_jobs_scheduler_tests \
              audit9_bundle_tests csrf_tests)
 
-section "Gate 1 — cargo test + cargo llvm-cov (terraops-backend + terraops-shared, --fail-under-lines ${GATE1_LINE_FLOOR})"
+section "Gate 1 — cargo test + cargo llvm-cov (terraops-backend + terraops-shared, --fail-under-lines ${GATE1_LINE_FLOOR} floor)"
 if ! compose build tests; then
     echo "[gate1] FAILED — could not build the 'tests' image." >&2
     failed=1

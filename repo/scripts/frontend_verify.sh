@@ -23,7 +23,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
-MATRIX="${REPO_ROOT}/docs/test-coverage.md"
+MATRIX="${REPO_ROOT}/../docs/test-coverage.md"
 FLOOR="${GATE2_FVM_FLOOR:-90}"
 
 if [[ ! -f "${MATRIX}" ]]; then
